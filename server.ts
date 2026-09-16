@@ -10,10 +10,21 @@ import { smartSearchAction } from './src/app/actions/smart-search.ts';
 import { batchUpdateEmailsAction } from './src/app/actions/batch-emails.ts';
 import { v1Router } from './src/server/v1-router.ts';
 
-async function startServer() {
+// 3000 is NexussEmu, 3005 Second Brain, 3006 the hub — AetherMail takes 3007.
+const PORT = Number(process.env.PORT) || 3007;
+
+/** True when running inside Vercel's serverless runtime rather than on the laptop. */
+const IS_SERVERLESS = !!process.env.VERCEL;
+
+/**
+ * Builds the configured Express app without binding a port.
+ *
+ * Split out from startServer so the same routes can be served two ways: by a
+ * long-lived process on the laptop, and by Vercel's Node runtime, which imports
+ * a handler and must never call listen() or start Vite's dev middleware.
+ */
+export async function createApp() {
   const app = express();
-  // 3000 is NexussEmu, 3005 Second Brain, 3006 the hub — AetherMail takes 3007.
-  const PORT = Number(process.env.PORT) || 3007;
 
   app.use(express.json({ limit: '10mb' }));
 
@@ -542,24 +553,35 @@ Your invoice PDF is available for download in your billing dashboard.`,
     }
   });
 
-  // Vite middleware for development
-  if (process.env.NODE_ENV !== 'production') {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: 'spa',
-    });
-    app.use(vite.middlewares);
-  } else {
-    const distPath = path.join(process.cwd(), 'dist');
-    app.use(express.static(distPath));
-    app.get('*', (req, res) => {
-      res.sendFile(path.join(distPath, 'index.html'));
-    });
+  // On Vercel the static build is served by the platform and Vite's dev server
+  // does not exist, so neither branch below applies — the app is API-only there.
+  if (!IS_SERVERLESS) {
+    if (process.env.NODE_ENV !== 'production') {
+      const vite = await createViteServer({
+        server: { middlewareMode: true },
+        appType: 'spa',
+      });
+      app.use(vite.middlewares);
+    } else {
+      const distPath = path.join(process.cwd(), 'dist');
+      app.use(express.static(distPath));
+      app.get('*', (req, res) => {
+        res.sendFile(path.join(distPath, 'index.html'));
+      });
+    }
   }
 
+  return app;
+}
+
+async function startServer() {
+  const app = await createApp();
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`AetherMail server running on http://0.0.0.0:${PORT}`);
   });
 }
 
-startServer();
+// Importing this module must not start a listener — Vercel imports it.
+if (!IS_SERVERLESS) {
+  void startServer();
+}
