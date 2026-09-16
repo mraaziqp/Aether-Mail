@@ -33,7 +33,9 @@ export async function sendEmailAction(params: SendEmailParams): Promise<SendEmai
       };
     }
 
-    const syncApiUrl = process.env.EMAIL_SYNC_API_URL || 'https://api.emailsync.internal/v1/messages/send';
+    // No default: api.emailsync.internal does not exist, and defaulting to it
+    // made an unconfigured install look configured.
+    const syncApiUrl = process.env.EMAIL_SYNC_API_URL ?? '';
 
     const payload = {
       account_id: accountId,
@@ -44,38 +46,59 @@ export async function sendEmailAction(params: SendEmailParams): Promise<SendEmai
       client_timestamp: new Date().toISOString(),
     };
 
-    let responseData: any = null;
-    let isLiveDispatched = false;
+    // A mail client must never claim it sent something it did not send.
+    //
+    // This previously caught the network error, invented a message id, and
+    // returned success:true with provider "(Simulated)" — so an unreachable
+    // sync engine looked identical to a delivered message. Losing mail silently
+    // is worse than refusing to send it.
+    if (!process.env.EMAIL_SYNC_API_URL) {
+      return {
+        success: false,
+        error:
+          'No outbound mail transport is configured. Set EMAIL_SYNC_API_URL (and ' +
+          'EMAIL_SYNC_API_KEY) to a real SMTP bridge or provider API. Nothing was sent.',
+      };
+    }
 
+    let response: Response;
     try {
-      const response = await fetch(syncApiUrl, {
+      response = await fetch(syncApiUrl, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${process.env.EMAIL_SYNC_API_KEY || 'sync_internal_token_prod'}`,
+          Authorization: `Bearer ${process.env.EMAIL_SYNC_API_KEY ?? ''}`,
           'X-Client-Agent': 'AetherMail-Dispatcher/1.0',
         },
         body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(4000), // 4s timeout protection
+        signal: AbortSignal.timeout(15_000),
       });
-
-      if (response.ok) {
-        responseData = await response.json();
-        isLiveDispatched = true;
-      }
     } catch (networkErr) {
-      // In development / preview, the internal sync engine host may be simulated
-      console.warn('Sync engine REST API endpoint unreachable, falling back to simulated dispatch:', networkErr);
+      return {
+        success: false,
+        error: `Mail transport unreachable at ${syncApiUrl}: ${
+          networkErr instanceof Error ? networkErr.message : String(networkErr)
+        }. Nothing was sent.`,
+      };
     }
 
-    const messageId = responseData?.message_id || `outbound_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
-    const dispatchedAt = responseData?.timestamp || new Date().toISOString();
+    if (!response.ok) {
+      const detail = await response.text().catch(() => '');
+      return {
+        success: false,
+        error: `Mail transport rejected the message (HTTP ${response.status}). ${detail.slice(0, 200)}`,
+      };
+    }
+
+    const responseData = (await response.json().catch(() => null)) as
+      | { message_id?: string; timestamp?: string }
+      | null;
 
     return {
       success: true,
-      messageId,
-      dispatchedAt,
-      provider: isLiveDispatched ? 'Sync Engine REST API' : 'External Sync Engine (Simulated)',
+      messageId: responseData?.message_id ?? `outbound_${Date.now()}`,
+      dispatchedAt: responseData?.timestamp ?? new Date().toISOString(),
+      provider: 'Mail transport',
     };
   } catch (err) {
     console.error('sendEmailAction error:', err);

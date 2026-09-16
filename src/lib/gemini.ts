@@ -15,12 +15,78 @@ export function getGeminiClient(): GoogleGenAI {
  * Analyzes raw incoming email with Gemini 2.5 Flash
  * Extracts category enum, strict 1-sentence TL;DR summary, and requires_alert boolean.
  */
+/**
+ * Classifies via the local OpenAI-compatible server (Ollama/LM Studio).
+ *
+ * Returns null rather than throwing when the server is unreachable or the reply
+ * is unusable, so the caller falls back to the keyword heuristic instead of
+ * failing ingestion outright — a badly categorised email is much better than an
+ * email that never arrives.
+ */
+const VALID_CATEGORIES = new Set([
+  'urgent', 'personal', 'newsletter', 'automated', 'work', 'financial',
+]);
+
+async function classifyWithLocalModel(prompt: string): Promise<GeminiExtractionResult | null> {
+  const baseUrl = (process.env.LOCAL_LLM_URL || 'http://localhost:11434/v1').replace(/\/$/, '');
+  const model = process.env.LOCAL_LLM_MODEL || 'llama3.1:8b';
+
+  try {
+    const res = await fetch(`${baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model,
+        messages: [
+          {
+            role: 'system',
+            content:
+              'You classify email. Reply with ONLY a JSON object, no prose and no code fences: ' +
+              '{"category":"urgent|personal|newsletter|automated|work|financial",' +
+              '"summary":"one sentence","requires_alert":true|false}',
+          },
+          { role: 'user', content: prompt },
+        ],
+        temperature: 0.1,
+        max_tokens: 200,
+      }),
+      // Local inference is slow and this runs during ingestion, so bound it.
+      signal: AbortSignal.timeout(120_000),
+    });
+
+    if (!res.ok) return null;
+
+    const json = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
+    const raw = json.choices?.[0]?.message?.content ?? '';
+
+    // Small models wrap JSON in prose or fences despite being told not to.
+    const match = raw.match(/\{[\s\S]*\}/);
+    if (!match) return null;
+
+    const parsed = JSON.parse(match[0]) as Partial<GeminiExtractionResult>;
+    if (typeof parsed.category !== 'string' || !VALID_CATEGORIES.has(parsed.category)) return null;
+
+    return {
+      category: parsed.category as GeminiExtractionResult['category'],
+      summary:
+        typeof parsed.summary === 'string' && parsed.summary.trim()
+          ? parsed.summary.trim()
+          : 'No summary produced.',
+      requires_alert: parsed.requires_alert === true,
+    };
+  } catch {
+    return null;
+  }
+}
+
 export async function processEmailWithGemini(params: {
   subject: string;
   sender: string;
   body: string;
 }): Promise<GeminiExtractionResult> {
-  const ai = getGeminiClient();
+  // This machine runs no cloud AI keys, so classification goes to the local
+  // model rather than silently degrading to keyword matching on every message.
+  // Gemini is still used when a key is present.
 
   const prompt = `Analyze this incoming email and extract structured metadata:
 Sender: ${params.sender}
@@ -33,6 +99,15 @@ Guidelines:
 1. "category" must be strictly one of: urgent, personal, newsletter, automated, work, financial.
 2. "summary" must be a strict 1-sentence TL;DR highlighting the main outcome, request, or action item.
 3. "requires_alert" must be true if this email requires immediate human attention (e.g. critical security issue, server outage, urgent financial action, tight turnaround deadline). Otherwise false.`;
+
+  if (!process.env.GEMINI_API_KEY) {
+    const local = await classifyWithLocalModel(prompt);
+    if (local) return local;
+    // Neither classifier available — fall through to the keyword heuristic.
+    throw new Error('No classifier available (no GEMINI_API_KEY, local model unreachable)');
+  }
+
+  const ai = getGeminiClient();
 
   try {
     const response = await ai.models.generateContent({

@@ -12,7 +12,8 @@ import { v1Router } from './src/server/v1-router.ts';
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  // 3000 is NexussEmu, 3005 Second Brain, 3006 the hub — AetherMail takes 3007.
+  const PORT = Number(process.env.PORT) || 3007;
 
   app.use(express.json({ limit: '10mb' }));
 
