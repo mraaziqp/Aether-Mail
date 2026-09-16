@@ -1,0 +1,450 @@
+import React, { useState, useEffect, useCallback } from 'react';
+import { DashboardHeader } from './components/DashboardHeader.tsx';
+import { Sidebar } from './components/Sidebar.tsx';
+import { EmailList } from './components/EmailList.tsx';
+import { EmailDetail } from './components/EmailDetail.tsx';
+import { DeveloperConsole } from './components/DeveloperConsole.tsx';
+import { WebhookModal } from './components/WebhookModal.tsx';
+import { NewAccountModal } from './components/NewAccountModal.tsx';
+import { DeveloperModal } from './components/DeveloperModal.tsx';
+import type { Account, EmailItem, ParsedSearchIntent, BatchActionType } from './types.ts';
+
+export default function App() {
+  const [accounts, setAccounts] = useState<Account[]>([]);
+  const [emails, setEmails] = useState<EmailItem[]>([]);
+  const [selectedAccountId, setSelectedAccountId] = useState<string>('all');
+  const [selectedCategory, setSelectedCategory] = useState<string>('all');
+  const [alertFilterOnly, setAlertFilterOnly] = useState<boolean>(false);
+  const [selectedEmailId, setSelectedEmailId] = useState<string | null>(null);
+  const [searchTerm, setSearchTerm] = useState<string>('');
+  
+  // View Switcher: Incident Feed vs Developer & Autonomous Agents Console
+  const [currentView, setCurrentView] = useState<'feed' | 'developer'>('feed');
+
+  // Sidebar Collapse state
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState<boolean>(false);
+
+  // Natural Language Smart Search State
+  const [activeSearchQuery, setActiveSearchQuery] = useState<string>('');
+  const [isSmartSearching, setIsSmartSearching] = useState<boolean>(false);
+  const [parsedIntent, setParsedIntent] = useState<ParsedSearchIntent | null>(null);
+
+  // Batch Selection State
+  const [selectedEmailIds, setSelectedEmailIds] = useState<Set<string>>(new Set());
+  const [isBatchLoading, setIsBatchLoading] = useState<boolean>(false);
+
+  const [loading, setLoading] = useState<boolean>(true);
+  const [isGeneratingReply, setIsGeneratingReply] = useState<boolean>(false);
+  const [isWebhookModalOpen, setIsWebhookModalOpen] = useState<boolean>(false);
+  const [isAccountModalOpen, setIsAccountModalOpen] = useState<boolean>(false);
+  const [isDeveloperModalOpen, setIsDeveloperModalOpen] = useState<boolean>(false);
+
+  // Fetch accounts
+  const fetchAccounts = useCallback(async () => {
+    try {
+      const res = await fetch('/api/accounts');
+      if (res.ok) {
+        const data = await res.json();
+        setAccounts(data);
+      }
+    } catch (err) {
+      console.error('Failed to load accounts:', err);
+    }
+  }, []);
+
+  // Fetch emails with active filters
+  const fetchEmails = useCallback(async () => {
+    try {
+      setLoading(true);
+      const params = new URLSearchParams();
+      if (selectedAccountId !== 'all') params.append('accountId', selectedAccountId);
+      if (selectedCategory !== 'all') params.append('category', selectedCategory);
+      if (alertFilterOnly) params.append('alertOnly', 'true');
+      if (searchTerm.trim()) params.append('search', searchTerm.trim());
+
+      const res = await fetch(`/api/emails?${params.toString()}`);
+      if (res.ok) {
+        const data: EmailItem[] = await res.json();
+        setEmails(data);
+
+        // Auto-select first email if none selected or selected is gone
+        if (data.length > 0) {
+          setSelectedEmailId((prev) => {
+            if (!prev || !data.some((e) => e.id === prev)) {
+              return data[0].id;
+            }
+            return prev;
+          });
+        } else {
+          setSelectedEmailId(null);
+        }
+      }
+    } catch (err) {
+      console.error('Failed to load emails:', err);
+    } finally {
+      setLoading(false);
+    }
+  }, [selectedAccountId, selectedCategory, alertFilterOnly, searchTerm]);
+
+  // Initial load and auto-seed if database is fresh
+  useEffect(() => {
+    const init = async () => {
+      await fetchAccounts();
+      const res = await fetch('/api/emails');
+      if (res.ok) {
+        const data = await res.json();
+        if (data.length === 0) {
+          // Auto-seed initial realistic data for instant rich preview
+          await fetch('/api/seed', { method: 'POST' });
+          await fetchAccounts();
+        }
+      }
+      await fetchEmails();
+    };
+    init();
+  }, [fetchAccounts, fetchEmails]);
+
+  // Handle seed action
+  const handleSeedData = async () => {
+    try {
+      setLoading(true);
+      await fetch('/api/seed', { method: 'POST' });
+      await fetchAccounts();
+      await fetchEmails();
+    } catch (err) {
+      console.error('Seed error:', err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Toggle email read status
+  const handleToggleRead = async (email: EmailItem, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    const newStatus = !email.is_read;
+    setEmails((prev) =>
+      prev.map((item) => (item.id === email.id ? { ...item, is_read: newStatus } : item))
+    );
+
+    try {
+      await fetch(`/api/emails/${email.id}/read`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ is_read: newStatus }),
+      });
+    } catch (err) {
+      console.error('Error toggling read status:', err);
+    }
+  };
+
+  // Delete email
+  const handleDeleteEmail = async (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setEmails((prev) => prev.filter((item) => item.id !== id));
+    setSelectedEmailIds((prev) => {
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
+    if (selectedEmailId === id) {
+      setSelectedEmailId(null);
+    }
+    try {
+      await fetch(`/api/emails/${id}`, { method: 'DELETE' });
+    } catch (err) {
+      console.error('Error deleting email:', err);
+    }
+  };
+
+  // Batch action handler (mark read, mark unread, delete)
+  const handleBatchAction = async (action: BatchActionType) => {
+    const ids = Array.from(selectedEmailIds);
+    if (ids.length === 0) return;
+
+    try {
+      setIsBatchLoading(true);
+      const res = await fetch('/api/emails/batch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ emailIds: ids, action }),
+      });
+
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || 'Batch operation failed');
+      }
+
+      // Optimistically update local state
+      if (action === 'mark_read') {
+        setEmails((prev) =>
+          prev.map((e) => (ids.includes(e.id) ? { ...e, is_read: true } : e))
+        );
+      } else if (action === 'mark_unread') {
+        setEmails((prev) =>
+          prev.map((e) => (ids.includes(e.id) ? { ...e, is_read: false } : e))
+        );
+      } else if (action === 'delete') {
+        setEmails((prev) => prev.filter((e) => !ids.includes(e.id)));
+        if (selectedEmailId && ids.includes(selectedEmailId)) {
+          setSelectedEmailId(null);
+        }
+      }
+
+      setSelectedEmailIds(new Set());
+    } catch (err) {
+      console.error('Batch action failed:', err);
+    } finally {
+      setIsBatchLoading(false);
+    }
+  };
+
+  // Toggle selection for an email
+  const handleToggleSelectEmail = (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setSelectedEmailIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  };
+
+  // Select all currently visible emails
+  const handleSelectAll = () => {
+    setSelectedEmailIds(new Set(emails.map((e) => e.id)));
+  };
+
+  // Clear all selections
+  const handleClearSelection = () => {
+    setSelectedEmailIds(new Set());
+  };
+
+  // Natural Language Smart Search
+  const handleExecuteSmartSearch = async (query: string) => {
+    if (!query.trim()) return;
+
+    try {
+      setIsSmartSearching(true);
+      const res = await fetch('/api/smart-search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          query: query.trim(),
+          accountId: selectedAccountId,
+        }),
+      });
+
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setEmails(data.emails);
+        setParsedIntent(data.parsedIntent || null);
+
+        if (data.emails.length > 0) {
+          setSelectedEmailId(data.emails[0].id);
+        } else {
+          setSelectedEmailId(null);
+        }
+      }
+    } catch (err) {
+      console.error('Smart search failed:', err);
+    } finally {
+      setIsSmartSearching(false);
+    }
+  };
+
+  // Reset Smart Search
+  const handleClearSmartSearch = () => {
+    setParsedIntent(null);
+    setActiveSearchQuery('');
+    fetchEmails();
+  };
+
+  // Generate Smart Reply (calling Server Action API)
+  const handleGenerateSmartReply = async (params: {
+    emailId: string;
+    tone: 'professional' | 'concise' | 'friendly' | 'firm';
+    instructions?: string;
+  }): Promise<string | null> => {
+    try {
+      setIsGeneratingReply(true);
+      const res = await fetch('/api/smart-reply', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(params),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to generate smart reply');
+      }
+
+      return data.draftReply || null;
+    } catch (err) {
+      console.error('Smart reply failed:', err);
+      return null;
+    } finally {
+      setIsGeneratingReply(false);
+    }
+  };
+
+  const selectedEmail = emails.find((e) => e.id === selectedEmailId) || null;
+
+  const getCategoryTitle = () => {
+    if (parsedIntent) return 'Smart Search Results';
+    if (alertFilterOnly) return 'Action Required';
+    if (selectedCategory === 'all') return 'All Messages';
+    if (selectedCategory === 'urgent') return 'Urgent Action';
+    if (selectedCategory === 'work') return 'Work & Projects';
+    if (selectedCategory === 'financial') return 'Financial';
+    if (selectedCategory === 'personal') return 'Personal';
+    if (selectedCategory === 'newsletter') return 'Newsletters';
+    if (selectedCategory === 'automated') return 'Automated & System';
+    return selectedCategory;
+  };
+
+  const alertCount = emails.filter((e) => e.requires_alert && !e.is_read).length;
+
+  return (
+    <div className="h-screen w-screen flex flex-col bg-[#090a0f] text-zinc-100 font-sans overflow-hidden antialiased select-none">
+      {/* 0. Unified Top Dashboard Header with Gemini Smart Search */}
+      <DashboardHeader
+        accounts={accounts}
+        selectedAccountId={selectedAccountId}
+        onExecuteSmartSearch={handleExecuteSmartSearch}
+        isSmartSearching={isSmartSearching}
+        parsedIntent={parsedIntent}
+        onClearSmartSearch={handleClearSmartSearch}
+        onOpenWebhookModal={() => setIsWebhookModalOpen(true)}
+        onOpenDeveloperModal={() => setIsDeveloperModalOpen(true)}
+        onToggleSidebar={() => setIsSidebarCollapsed((prev) => !prev)}
+        activeSearchQuery={activeSearchQuery}
+        setActiveSearchQuery={setActiveSearchQuery}
+        currentView={currentView}
+        onSelectView={setCurrentView}
+        alertCount={alertCount}
+      />
+
+      {/* Main Work Area */}
+      <div className="flex-1 flex overflow-hidden">
+        {/* 1. Sidebar */}
+        <Sidebar
+          accounts={accounts}
+          emails={emails}
+          selectedAccountId={selectedAccountId}
+          selectedCategory={selectedCategory}
+          alertFilterOnly={alertFilterOnly}
+          onSelectAccount={(accId) => {
+            setSelectedAccountId(accId);
+            if (parsedIntent) handleClearSmartSearch();
+            if (currentView !== 'feed') setCurrentView('feed');
+          }}
+          onSelectCategory={(catId) => {
+            setSelectedCategory(catId);
+            if (parsedIntent) handleClearSmartSearch();
+            if (currentView !== 'feed') setCurrentView('feed');
+          }}
+          onToggleAlertFilter={() => {
+            setAlertFilterOnly((prev) => !prev);
+            if (parsedIntent) handleClearSmartSearch();
+            if (currentView !== 'feed') setCurrentView('feed');
+          }}
+          onOpenWebhookModal={() => setIsWebhookModalOpen(true)}
+          onOpenAccountModal={() => setIsAccountModalOpen(true)}
+          onOpenDeveloperModal={() => setIsDeveloperModalOpen(true)}
+          onRefresh={() => {
+            if (parsedIntent) handleClearSmartSearch();
+            else fetchEmails();
+          }}
+          onSeedData={handleSeedData}
+          loading={loading}
+          isCollapsed={isSidebarCollapsed}
+          onToggleCollapse={() => setIsSidebarCollapsed((prev) => !prev)}
+          currentView={currentView}
+          onSelectView={setCurrentView}
+        />
+
+        {currentView === 'developer' ? (
+          /* Dedicated Developer & Autonomous Agents Command Console View */
+          <DeveloperConsole
+            onReturnToFeed={() => setCurrentView('feed')}
+            onEmailIngested={() => {
+              fetchAccounts();
+              fetchEmails();
+            }}
+          />
+        ) : (
+          /* Incident Feed & Inspection Drawer Work Area */
+          <>
+            {/* 2. Email Feed with Batch Management */}
+            <EmailList
+              emails={emails}
+              selectedEmailId={selectedEmailId}
+              onSelectEmail={(email) => {
+                setSelectedEmailId(email.id);
+                if (!email.is_read) {
+                  handleToggleRead(email);
+                }
+              }}
+              onToggleRead={handleToggleRead}
+              onDeleteEmail={handleDeleteEmail}
+              selectedEmailIds={selectedEmailIds}
+              onToggleSelectEmail={handleToggleSelectEmail}
+              onSelectAll={handleSelectAll}
+              onClearSelection={handleClearSelection}
+              onBatchAction={handleBatchAction}
+              isBatchLoading={isBatchLoading}
+              searchTerm={searchTerm}
+              onSearchChange={setSearchTerm}
+              activeCategoryLabel={getCategoryTitle()}
+              loading={loading}
+              parsedIntent={parsedIntent}
+              onClearSmartSearch={handleClearSmartSearch}
+            />
+
+            {/* 3. Detail View with Outbound Sending Engine & Inspection Drawer */}
+            <EmailDetail
+              email={selectedEmail}
+              onGenerateSmartReply={handleGenerateSmartReply}
+              isGeneratingReply={isGeneratingReply}
+              onToggleRead={(email) => handleToggleRead(email)}
+            />
+          </>
+        )}
+      </div>
+
+      {/* Webhook Ingestion Testing Modal */}
+      <WebhookModal
+        isOpen={isWebhookModalOpen}
+        onClose={() => setIsWebhookModalOpen(false)}
+        accounts={accounts}
+        onIngestSuccess={() => {
+          fetchAccounts();
+          fetchEmails();
+        }}
+      />
+
+      {/* New Account Modal */}
+      <NewAccountModal
+        isOpen={isAccountModalOpen}
+        onClose={() => setIsAccountModalOpen(false)}
+        onAccountCreated={() => {
+          fetchAccounts();
+          fetchEmails();
+        }}
+      />
+
+      {/* Developer & Agent Bot API Engine Modal */}
+      <DeveloperModal
+        isOpen={isDeveloperModalOpen}
+        onClose={() => setIsDeveloperModalOpen(false)}
+        onEmailIngested={() => {
+          fetchAccounts();
+          fetchEmails();
+        }}
+      />
+    </div>
+  );
+}

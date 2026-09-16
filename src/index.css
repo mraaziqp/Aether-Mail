@@ -1,0 +1,56 @@
+@import "tailwindcss";
+
+@layer base {
+  body {
+    background-color: #090a0f;
+    color: #e4e7ee;
+    font-family: 'Geist', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+  }
+
+  code, pre, kbd, samp {
+    font-family: 'Geist Mono', monospace;
+  }
+
+  ::-webkit-scrollbar {
+    width: 5px;
+    height: 5px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: #090a0f;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: #1a1d27;
+    border-radius: 4px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: #262b3a;
+  }
+}
+
+.bg-obsidian-950 {
+  background-color: #090a0f;
+}
+
+.bg-obsidian-900 {
+  background-color: #11131a;
+}
+
+.bg-obsidian-850 {
+  background-color: #151821;
+}
+
+.border-obsidian-800 {
+  border-color: #1a1d27;
+}
+
+.border-obsidian-700 {
+  border-color: #262b3a;
+}
+
+

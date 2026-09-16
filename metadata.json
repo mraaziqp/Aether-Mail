@@ -1,0 +1,6 @@
+{
+  "name": "AetherMail AI Email Client",
+  "description": "Obsidian dark-mode NOC command center with real-time email triage, Gemini 2.5 Flash threat evaluation, and Root Access REST API for autonomous bot integration.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

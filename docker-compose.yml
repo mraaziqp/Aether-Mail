@@ -1,0 +1,42 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: aethermail-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgrespassword
+      POSTGRES_DB: aethermail
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d aethermail"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: aethermail-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+
+  emailengine:
+    image: postalsys/emailengine:latest
+    container_name: aethermail-emailengine
+    restart: unless-stopped
+    depends_on:
+      - redis
+    environment:
+      EENGINE_REDIS: "redis://redis:6379"
+      EENGINE_SECRET: "aethermail-local-dev-secret-key"
+      EENGINE_PORT: "3001"
+      EENGINE_WEBHOOK_URL: "http://host.docker.internal:3000/api/webhooks/email"
+    ports:
+      - "3001:3001"
+
+volumes:
+  postgres_data:
