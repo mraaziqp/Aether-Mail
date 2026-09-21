@@ -48,11 +48,62 @@ export const api_keys = pgTable('api_keys', {
   created_at: timestamp('created_at').defaultNow(),
 });
 
+// --- Enterprise Self-Hosted Business Mail & Jarvis Infrastructure ---
+
+export const domains = pgTable('domains', {
+  id: text('id').primaryKey(),
+  domain_name: text('domain_name').notNull().unique(),
+  is_verified: boolean('is_verified').notNull().default(false),
+  dkim_private_key: text('dkim_private_key').notNull(),
+  dkim_public_key: text('dkim_public_key').notNull(),
+  dns_mx_record: text('dns_mx_record').notNull(),
+  dns_spf_record: text('dns_spf_record').notNull(),
+  created_at: timestamp('created_at').defaultNow(),
+});
+
+export const mailboxes = pgTable('mailboxes', {
+  id: text('id').primaryKey(),
+  domain_id: text('domain_id')
+    .notNull()
+    .references(() => domains.id, { onDelete: 'cascade' }),
+  email_address: text('email_address').notNull().unique(),
+  password_hash: text('password_hash').notNull(),
+  is_active: boolean('is_active').notNull().default(true),
+  created_at: timestamp('created_at').defaultNow(),
+});
+
+export const agent_keys = pgTable('agent_keys', {
+  id: text('id').primaryKey(),
+  bot_name: text('bot_name').notNull(), // e.g., "Jarvis"
+  key_hash: text('key_hash').notNull().unique(),
+  scopes: jsonb('scopes').$type<string[]>().notNull().default([]), // super_admin, read_all, send_as_any
+  last_active: timestamp('last_active'),
+  created_at: timestamp('created_at').defaultNow(),
+});
+
+export const domainsRelations = relations(domains, ({ many }) => ({
+  mailboxes: many(mailboxes),
+}));
+
+export const mailboxesRelations = relations(mailboxes, ({ one }) => ({
+  domain: one(domains, {
+    fields: [mailboxes.domain_id],
+    references: [domains.id],
+  }),
+}));
+
 export type Account = typeof accounts.$inferSelect;
 export type NewAccount = typeof accounts.$inferInsert;
 export type Email = typeof emails.$inferSelect;
 export type NewEmail = typeof emails.$inferInsert;
 export type ApiKey = typeof api_keys.$inferSelect;
 export type NewApiKey = typeof api_keys.$inferInsert;
+
+export type Domain = typeof domains.$inferSelect;
+export type NewDomain = typeof domains.$inferInsert;
+export type Mailbox = typeof mailboxes.$inferSelect;
+export type NewMailbox = typeof mailboxes.$inferInsert;
+export type AgentKey = typeof agent_keys.$inferSelect;
+export type NewAgentKey = typeof agent_keys.$inferInsert;
 
 export type EmailCategory = 'urgent' | 'personal' | 'newsletter' | 'automated' | 'work' | 'financial';

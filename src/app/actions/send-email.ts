@@ -7,6 +7,8 @@
  * Dispatches outbound email messages via the external sync engine's REST API.
  */
 
+import { dispatchViaStalwartSmtp } from '../../lib/stalwart.ts';
+
 export interface SendEmailParams {
   accountId: string;
   to: string;
@@ -46,6 +48,32 @@ export async function sendEmailAction(params: SendEmailParams): Promise<SendEmai
       client_timestamp: new Date().toISOString(),
     };
 
+    // Preferred path: a real SMTP server. dispatchViaStalwartSmtp was written but
+    // nothing imported it, so outbound mail had no transport at all even though
+    // the code existed.
+    if (process.env.STALWART_SMTP_HOST) {
+      const sent = await dispatchViaStalwartSmtp({
+        from: process.env.AETHERMAIL_SENDER || `jarvis@${process.env.AETHERMAIL_DOMAIN || 'localhost'}`,
+        to,
+        subject,
+        htmlBody,
+      });
+
+      if (!sent.success) {
+        return {
+          success: false,
+          error: `SMTP refused the message: ${sent.error ?? 'unknown error'}. Nothing was sent.`,
+        };
+      }
+
+      return {
+        success: true,
+        messageId: sent.messageId,
+        dispatchedAt: new Date().toISOString(),
+        provider: 'Stalwart SMTP',
+      };
+    }
+
     // A mail client must never claim it sent something it did not send.
     //
     // This previously caught the network error, invented a message id, and
@@ -56,8 +84,8 @@ export async function sendEmailAction(params: SendEmailParams): Promise<SendEmai
       return {
         success: false,
         error:
-          'No outbound mail transport is configured. Set EMAIL_SYNC_API_URL (and ' +
-          'EMAIL_SYNC_API_KEY) to a real SMTP bridge or provider API. Nothing was sent.',
+          'No outbound mail transport is configured. Set STALWART_SMTP_HOST to send via ' +
+          'the mail server, or EMAIL_SYNC_API_URL for a REST bridge. Nothing was sent.',
       };
     }
 
