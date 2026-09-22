@@ -6,6 +6,9 @@ export interface StalwartConfig {
   adminSecret: string;
   smtpHost: string;
   smtpPort: number;
+  /** Relay credentials. Empty for an unauthenticated local server. */
+  smtpUser: string;
+  smtpPass: string;
 }
 
 export function getStalwartConfig(): StalwartConfig {
@@ -15,8 +18,10 @@ export function getStalwartConfig(): StalwartConfig {
     // No default. A placeholder secret that works in dev silently becomes the
     // production secret the day someone forgets to set it.
     adminSecret: process.env.STALWART_ADMIN_SECRET ?? '',
-    smtpHost: process.env.STALWART_SMTP_HOST || 'localhost',
-    smtpPort: Number(process.env.STALWART_SMTP_PORT) || 587,
+    smtpHost: process.env.SMTP_HOST || process.env.STALWART_SMTP_HOST || 'localhost',
+    smtpPort: Number(process.env.SMTP_PORT || process.env.STALWART_SMTP_PORT) || 587,
+    smtpUser: process.env.SMTP_USER ?? '',
+    smtpPass: process.env.SMTP_PASS ?? '',
   };
 }
 
@@ -117,13 +122,23 @@ export async function dispatchViaStalwartSmtp(params: {
 }): Promise<{ success: boolean; messageId?: string; error?: string }> {
   const config = getStalwartConfig();
 
-  // Configure nodemailer transporter pointing to Stalwart SMTP port (25 or 587)
+  // Works against a local Stalwart *or* any authenticated relay — Resend, SES,
+  // Postmark, Zoho. That matters because this machine's ISP blocks outbound
+  // port 25, so mail cannot be delivered directly no matter what runs locally.
+  const isLocal = /^(localhost|127\.|::1|0\.0\.0\.0)/.test(config.smtpHost);
+
   const transporter = nodemailer.createTransport({
     host: config.smtpHost,
     port: config.smtpPort,
     secure: config.smtpPort === 465,
+    ...(config.smtpUser
+      ? { auth: { user: config.smtpUser, pass: config.smtpPass } }
+      : {}),
     tls: {
-      rejectUnauthorized: false, // For internal Docker and self-signed local certs
+      // Self-signed certs are expected on a local server. Accepting any
+      // certificate from a public relay would make the connection
+      // interceptable, so verification stays on everywhere else.
+      rejectUnauthorized: !isLocal,
     },
   });
 
