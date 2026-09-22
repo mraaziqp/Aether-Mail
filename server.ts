@@ -1,6 +1,5 @@
 import express from 'express';
 import path from 'path';
-import { createServer as createViteServer } from 'vite';
 import { db } from './src/db/index.ts';
 import { accounts, emails, type NewEmail, type NewAccount } from './src/db/schema.ts';
 import { processEmailWithGemini, generateSmartReplyWithGemini } from './src/lib/gemini.ts';
@@ -557,6 +556,7 @@ Your invoice PDF is available for download in your billing dashboard.`,
   // does not exist, so neither branch below applies — the app is API-only there.
   if (!IS_SERVERLESS) {
     if (process.env.NODE_ENV !== 'production') {
+      const { createServer: createViteServer } = await import('vite');
       const vite = await createViteServer({
         server: { middlewareMode: true },
         appType: 'spa',
