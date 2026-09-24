@@ -60,6 +60,7 @@ export const NewAccountModal: React.FC<NewAccountModalProps> = ({
 
   // External Account State
   const [externalEmail, setExternalEmail] = useState('');
+  const [externalAppPassword, setExternalAppPassword] = useState('');
   const [externalProvider, setExternalProvider] = useState<'google' | 'outlook' | 'custom'>('google');
   const [loadingExternal, setLoadingExternal] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -177,25 +178,47 @@ export const NewAccountModal: React.FC<NewAccountModalProps> = ({
 
     setLoadingExternal(true);
     setError(null);
+    setSuccessMessage(null);
 
     try {
-      const res = await fetch('/api/accounts', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          id: `acc_${Date.now()}`,
-          provider: externalProvider,
-          email_address: externalEmail.trim(),
-        }),
-      });
+      if (externalProvider === 'google' && externalAppPassword.trim()) {
+        const syncRes = await fetch('/api/v1/sync/gmail', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            email_address: externalEmail.trim(),
+            app_password: externalAppPassword.trim(),
+          }),
+        });
 
-      if (!res.ok) {
-        const data = await res.json();
-        throw new Error(data.error || 'Failed to connect external account');
+        const syncData = await syncRes.json();
+        if (!syncRes.ok || !syncData.success) {
+          throw new Error(syncData.error || 'Failed to authenticate with Gmail IMAP. Check your App Password.');
+        }
+
+        setSuccessMessage(`Connected! Synchronized ${syncData.imported} emails from ${externalEmail.trim()}`);
+      } else {
+        const res = await fetch('/api/accounts', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            id: `acc_${Date.now()}`,
+            provider: externalProvider,
+            email_address: externalEmail.trim(),
+          }),
+        });
+
+        if (!res.ok) {
+          const data = await res.json();
+          throw new Error(data.error || 'Failed to connect external account');
+        }
+        setSuccessMessage(`Account ${externalEmail.trim()} connected!`);
       }
 
       onAccountCreated();
-      onClose();
+      setTimeout(() => {
+        onClose();
+      }, 1500);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -495,9 +518,35 @@ export const NewAccountModal: React.FC<NewAccountModalProps> = ({
                   value={externalEmail}
                   onChange={(e) => setExternalEmail(e.target.value)}
                   placeholder="e.g. personal@gmail.com"
-                  className="w-full bg-[#090b10] border border-[#1b1f2e] rounded-lg px-3 py-2 text-xs text-zinc-200 placeholder-zinc-600 focus:outline-none focus:border-amber-500/60"
+                  className="w-full bg-[#090b10] border border-[#1b1f2e] rounded-lg px-3 py-2 text-xs text-zinc-200 placeholder-zinc-600 focus:outline-none focus:border-amber-500/60 font-mono"
                 />
               </div>
+
+              {externalProvider === 'google' && (
+                <div>
+                  <label className="block text-xs font-medium text-zinc-400 mb-1.5 flex items-center justify-between">
+                    <span>Google App Password</span>
+                    <a
+                      href="https://myaccount.google.com/apppasswords"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-[10px] text-amber-400 hover:underline"
+                    >
+                      Generate password ↗
+                    </a>
+                  </label>
+                  <input
+                    type="password"
+                    value={externalAppPassword}
+                    onChange={(e) => setExternalAppPassword(e.target.value)}
+                    placeholder="16-character code (e.g. efuw pgkc fwsj zlwu)"
+                    className="w-full bg-[#090b10] border border-[#1b1f2e] rounded-lg px-3 py-2 text-xs text-zinc-200 placeholder-zinc-600 focus:outline-none focus:border-amber-500/60 font-mono tracking-wider"
+                  />
+                  <p className="text-[10px] text-zinc-500 mt-1">
+                    Enables live 2-way IMAP inbox sync and autonomous AI threat classification.
+                  </p>
+                </div>
+              )}
 
               <div className="pt-2 flex items-center justify-end gap-2">
                 <button

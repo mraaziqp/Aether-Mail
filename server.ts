@@ -558,7 +558,7 @@ Your invoice PDF is available for download in your billing dashboard.`,
     if (process.env.NODE_ENV !== 'production') {
       const { createServer: createViteServer } = await import('vite');
       const vite = await createViteServer({
-        server: { middlewareMode: true },
+        server: { middlewareMode: true, allowedHosts: true },
         appType: 'spa',
       });
       app.use(vite.middlewares);
@@ -581,7 +581,16 @@ async function startServer() {
   });
 }
 
-// Importing this module must not start a listener — Vercel imports it.
-if (!IS_SERVERLESS) {
+// Only start standalone listener when executed directly (e.g., node server.ts / tsx server.ts)
+// Never start a listener when imported by Vercel serverless handler
+const isDirectExecution = process.argv[1] && (
+  process.argv[1].endsWith('server.ts') ||
+  process.argv[1].endsWith('server.cjs') ||
+  process.argv[1].endsWith('server.js')
+);
+
+if (isDirectExecution && !process.env.VERCEL && !process.env.AWS_LAMBDA_FUNCTION_NAME) {
   void startServer();
 }
+
+

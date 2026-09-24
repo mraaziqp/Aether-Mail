@@ -877,3 +877,41 @@ v1Router.post('/agent/dispatch', requireAgentScope('send_as_any'), async (req: R
     });
   }
 });
+
+/**
+ * Direct Gmail IMAP Sync: Fetches real inbox messages using Google App Passwords
+ */
+v1Router.post('/sync/gmail', async (req: Request, res: Response) => {
+  try {
+    const { email_address, app_password, limit } = req.body;
+    if (!email_address || !app_password) {
+      return res.status(400).json({
+        success: false,
+        error: 'email_address and app_password are required.',
+      });
+    }
+
+    const { syncGmailAccount } = await import('../lib/imap-sync.ts');
+    const result = await syncGmailAccount(email_address, app_password, limit || 20);
+
+    if (!result.success) {
+      return res.status(400).json({
+        success: false,
+        error: result.error || 'Failed to authenticate or sync with Gmail IMAP server.',
+      });
+    }
+
+    return res.json({
+      success: true,
+      message: `Successfully synchronized ${result.imported} messages from Gmail inbox.`,
+      imported: result.imported,
+      email_address,
+    });
+  } catch (err) {
+    console.error('v1 POST /sync/gmail error:', err);
+    return res.status(500).json({
+      success: false,
+      error: err instanceof Error ? err.message : 'Internal IMAP sync error',
+    });
+  }
+});

@@ -31,6 +31,7 @@ interface SidebarProps {
   onSelectAccount: (accountId: string) => void;
   onSelectCategory: (category: string) => void;
   onToggleAlertFilter: () => void;
+  onOpenComposeModal?: () => void;
   onOpenWebhookModal: () => void;
   onOpenAccountModal: () => void;
   onOpenDeveloperModal: () => void;
@@ -68,6 +69,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onSelectAccount,
   onSelectCategory,
   onToggleAlertFilter,
+  onOpenComposeModal,
   onOpenWebhookModal,
   onOpenAccountModal,
   onOpenDeveloperModal,
@@ -153,6 +155,20 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </div>
       )}
 
+      {/* Quick Compose Dispatch Button */}
+      <div className="px-3 pt-2 pb-1">
+        <button
+          onClick={onOpenComposeModal}
+          title="Compose New Dispatch"
+          className={`w-full flex items-center ${
+            isCollapsed ? 'justify-center p-2' : 'justify-center space-x-2 px-3 py-2'
+          } bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-zinc-950 font-bold rounded-lg text-xs shadow-md transition-all active:scale-[0.98]`}
+        >
+          <Send className="w-3.5 h-3.5 flex-shrink-0" />
+          {!isCollapsed && <span>Compose Dispatch</span>}
+        </button>
+      </div>
+
       {/* Alert Priority Filter Banner */}
       <div className="p-3">
         <button
@@ -237,7 +253,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         <div>
           {!isCollapsed && (
             <div className="px-2 pb-1.5 flex items-center justify-between text-[10px] font-semibold tracking-wider text-zinc-400 uppercase font-mono">
-              <span>Accounts</span>
+              <span>Mail Profiles</span>
               <button
                 onClick={onOpenAccountModal}
                 title="Connect New Account"
@@ -262,7 +278,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             >
               <div className="flex items-center space-x-2 truncate">
                 <Radio className="w-3.5 h-3.5 text-zinc-400 flex-shrink-0" />
-                {!isCollapsed && <span className="truncate text-xs">All Inboxes</span>}
+                {!isCollapsed && <span className="truncate text-xs font-medium">All Inboxes (Unified)</span>}
               </div>
               {!isCollapsed && (
                 <span className="text-[10px] text-zinc-400 font-mono px-1 py-0.2 rounded bg-[#11131a]">
@@ -271,39 +287,131 @@ export const Sidebar: React.FC<SidebarProps> = ({
               )}
             </button>
 
-            {accounts.map((acc) => {
-              const isActive = selectedAccountId === acc.id;
-              const unread = getAccountUnread(acc.id);
+            {/* Section 1: Business Accounts */}
+            {!isCollapsed && accounts.some((a) => a.email_address.includes('arpcloudsolutions.co.za')) && (
+              <div className="pt-2 pb-1 px-2 text-[9px] font-mono text-emerald-400 uppercase tracking-wider flex items-center gap-1.5">
+                <span>🏢 ARP Cloud Solutions</span>
+              </div>
+            )}
+            {accounts
+              .filter((a) => a.email_address.includes('arpcloudsolutions.co.za') && !a.email_address.includes('jarvis'))
+              .map((acc) => {
+                const isActive = selectedAccountId === acc.id;
+                const unread = getAccountUnread(acc.id);
 
-              return (
-                <button
-                  key={acc.id}
-                  onClick={() => onSelectAccount(acc.id)}
-                  title={isCollapsed ? acc.email_address : undefined}
-                  className={`w-full flex items-center ${
-                    isCollapsed ? 'justify-center p-2' : 'justify-between px-2.5 py-1.5'
-                  } rounded-lg text-xs transition-colors ${
-                    isActive
-                      ? 'bg-[#1c202d] text-zinc-100 font-medium border border-[#2b3247]'
-                      : 'text-zinc-400 hover:bg-[#151821] hover:text-zinc-200 border border-transparent'
-                  }`}
-                >
-                  <div className="flex items-center space-x-2 truncate">
-                    <div className="w-2 h-2 rounded-full bg-emerald-500/80 flex-shrink-0" />
-                    {!isCollapsed && (
-                      <span className="truncate text-[11px] font-mono text-zinc-300">
-                        {acc.email_address}
+                return (
+                  <button
+                    key={acc.id}
+                    onClick={() => onSelectAccount(acc.id)}
+                    title={isCollapsed ? acc.email_address : undefined}
+                    className={`w-full flex items-center ${
+                      isCollapsed ? 'justify-center p-2' : 'justify-between px-2.5 py-1.5'
+                    } rounded-lg text-xs transition-colors ${
+                      isActive
+                        ? 'bg-emerald-950/40 text-emerald-200 font-medium border border-emerald-500/40'
+                        : 'text-zinc-400 hover:bg-[#151821] hover:text-zinc-200 border border-transparent'
+                    }`}
+                  >
+                    <div className="flex items-center space-x-2 truncate">
+                      <div className="w-2 h-2 rounded-full bg-emerald-400 flex-shrink-0" />
+                      {!isCollapsed && (
+                        <span className="truncate text-[11px] font-mono text-zinc-200">
+                          {acc.email_address}
+                        </span>
+                      )}
+                    </div>
+                    {!isCollapsed && unread > 0 && (
+                      <span className="text-[9px] px-1 py-0.2 rounded bg-emerald-950 text-emerald-300 font-mono border border-emerald-800">
+                        {unread}
                       </span>
                     )}
-                  </div>
-                  {!isCollapsed && unread > 0 && (
-                    <span className="text-[9px] px-1 py-0.2 rounded bg-[#151821] text-zinc-300 font-mono border border-[#262b3a]">
-                      {unread}
-                    </span>
-                  )}
-                </button>
-              );
-            })}
+                  </button>
+                );
+              })}
+
+            {/* Section 2: Google Personal Accounts */}
+            {!isCollapsed && accounts.some((a) => a.email_address.includes('@gmail.com')) && (
+              <div className="pt-2 pb-1 px-2 text-[9px] font-mono text-blue-400 uppercase tracking-wider flex items-center gap-1.5">
+                <span>📬 Google Accounts</span>
+              </div>
+            )}
+            {accounts
+              .filter((a) => a.email_address.includes('@gmail.com'))
+              .map((acc) => {
+                const isActive = selectedAccountId === acc.id;
+                const unread = getAccountUnread(acc.id);
+
+                return (
+                  <button
+                    key={acc.id}
+                    onClick={() => onSelectAccount(acc.id)}
+                    title={isCollapsed ? acc.email_address : undefined}
+                    className={`w-full flex items-center ${
+                      isCollapsed ? 'justify-center p-2' : 'justify-between px-2.5 py-1.5'
+                    } rounded-lg text-xs transition-colors ${
+                      isActive
+                        ? 'bg-blue-950/40 text-blue-200 font-medium border border-blue-500/40'
+                        : 'text-zinc-400 hover:bg-[#151821] hover:text-zinc-200 border border-transparent'
+                    }`}
+                  >
+                    <div className="flex items-center space-x-2 truncate">
+                      <div className="w-2 h-2 rounded-full bg-blue-400 flex-shrink-0" />
+                      {!isCollapsed && (
+                        <span className="truncate text-[11px] font-mono text-zinc-200">
+                          {acc.email_address}
+                        </span>
+                      )}
+                    </div>
+                    {!isCollapsed && unread > 0 && (
+                      <span className="text-[9px] px-1 py-0.2 rounded bg-blue-950 text-blue-300 font-mono border border-blue-800">
+                        {unread}
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+
+            {/* Section 3: Jarvis & Agent Identities */}
+            {!isCollapsed && accounts.some((a) => a.email_address.includes('jarvis')) && (
+              <div className="pt-2 pb-1 px-2 text-[9px] font-mono text-amber-400 uppercase tracking-wider flex items-center gap-1.5">
+                <span>🤖 Autonomous Agents</span>
+              </div>
+            )}
+            {accounts
+              .filter((a) => a.email_address.includes('jarvis'))
+              .map((acc) => {
+                const isActive = selectedAccountId === acc.id;
+                const unread = getAccountUnread(acc.id);
+
+                return (
+                  <button
+                    key={acc.id}
+                    onClick={() => onSelectAccount(acc.id)}
+                    title={isCollapsed ? acc.email_address : undefined}
+                    className={`w-full flex items-center ${
+                      isCollapsed ? 'justify-center p-2' : 'justify-between px-2.5 py-1.5'
+                    } rounded-lg text-xs transition-colors ${
+                      isActive
+                        ? 'bg-amber-950/40 text-amber-200 font-medium border border-amber-500/40'
+                        : 'text-zinc-400 hover:bg-[#151821] hover:text-zinc-200 border border-transparent'
+                    }`}
+                  >
+                    <div className="flex items-center space-x-2 truncate">
+                      <Bot className="w-3.5 h-3.5 text-amber-400 flex-shrink-0" />
+                      {!isCollapsed && (
+                        <span className="truncate text-[11px] font-mono text-amber-300">
+                          {acc.email_address}
+                        </span>
+                      )}
+                    </div>
+                    {!isCollapsed && unread > 0 && (
+                      <span className="text-[9px] px-1 py-0.2 rounded bg-amber-950 text-amber-300 font-mono border border-amber-800">
+                        {unread}
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
           </div>
         </div>
       </div>

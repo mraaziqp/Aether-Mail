@@ -16,6 +16,7 @@ import {
   Sliders,
   ExternalLink,
   ChevronRight,
+  ChevronLeft,
   User,
   AtSign,
   Tag
@@ -32,6 +33,7 @@ interface EmailDetailProps {
   }) => Promise<string | null>;
   isGeneratingReply: boolean;
   onToggleRead: (email: EmailItem) => void;
+  onBack?: () => void;
 }
 
 interface ActionTask {
@@ -45,6 +47,7 @@ export const EmailDetail: React.FC<EmailDetailProps> = ({
   onGenerateSmartReply,
   isGeneratingReply,
   onToggleRead,
+  onBack,
 }) => {
   const [tone, setTone] = useState<'professional' | 'concise' | 'friendly' | 'firm'>('professional');
   const [instructions, setInstructions] = useState('');
@@ -226,9 +229,21 @@ export const EmailDetail: React.FC<EmailDetailProps> = ({
         {/* Email Header Bar */}
         <div className="p-5 border-b border-[#1a1d27] bg-[#0c0e14] space-y-4">
           <div className="flex items-start justify-between gap-4">
-            <h1 className="text-base font-bold text-zinc-100 tracking-tight leading-snug">
-              {email.subject}
-            </h1>
+            <div className="flex items-center gap-3">
+              {onBack && (
+                <button
+                  onClick={onBack}
+                  className="lg:hidden p-1.5 rounded-lg bg-[#151821] text-zinc-300 hover:text-white border border-[#262b3a] flex items-center gap-1 text-xs transition-colors flex-shrink-0"
+                  title="Back to email list"
+                >
+                  <ChevronLeft className="w-4 h-4" />
+                  <span className="text-[11px] font-mono">Back</span>
+                </button>
+              )}
+              <h1 className="text-base font-bold text-zinc-100 tracking-tight leading-snug">
+                {email.subject}
+              </h1>
+            </div>
 
             <div className="flex items-center space-x-2 flex-shrink-0">
               <button

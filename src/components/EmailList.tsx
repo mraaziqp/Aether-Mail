@@ -119,7 +119,7 @@ export const EmailList: React.FC<EmailListProps> = ({
   return (
     <div 
       id="email-feed-column"
-      className="w-96 xl:w-[440px] bg-[#090a0f] border-r border-[#1a1d27] flex flex-col h-full flex-shrink-0 select-none"
+      className="w-full md:w-96 xl:w-[440px] bg-[#090a0f] border-r border-[#1a1d27] flex flex-col h-full flex-shrink-0 select-none"
     >
       {/* Header Bar */}
       <div className="p-3 border-b border-[#1a1d27] bg-[#11131a] sticky top-0 z-10 space-y-2">
@@ -379,11 +379,25 @@ export const EmailList: React.FC<EmailListProps> = ({
 
                 {/* Bottom Row: Category Badge & Quick Actions */}
                 <div className="mt-2 ml-6 flex items-center justify-between">
-                  <span
-                    className={`text-[9px] uppercase font-mono tracking-wider px-2 py-0.5 rounded border ${categoryStyle}`}
-                  >
-                    {email.category}
-                  </span>
+                  <div className="flex items-center space-x-1.5 flex-wrap gap-1">
+                    <span
+                      className={`text-[9px] uppercase font-mono tracking-wider px-2 py-0.5 rounded border ${categoryStyle}`}
+                    >
+                      {email.category}
+                    </span>
+                    {(email.account_email?.includes('arpcloudsolutions.co.za') || email.sender?.includes('arpcloudsolutions.co.za')) && (
+                      <span className="text-[9px] uppercase font-mono font-semibold tracking-wider px-1.5 py-0.5 rounded bg-emerald-950/80 text-emerald-300 border border-emerald-600/60 flex items-center gap-1 shadow-sm">
+                        <span>🏢</span>
+                        <span>BUSINESS</span>
+                      </span>
+                    )}
+                    {email.subject.toLowerCase().includes('payfast') && (
+                      <span className="text-[9px] uppercase font-mono font-bold tracking-wider px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/60 flex items-center gap-1 shadow-sm">
+                        <span>💳</span>
+                        <span>PAYFAST MERCHANT</span>
+                      </span>
+                    )}
+                  </div>
 
                   {/* Quick Action Icons on hover */}
                   <div className="flex items-center space-x-1 opacity-0 group-hover:opacity-100 transition-opacity">

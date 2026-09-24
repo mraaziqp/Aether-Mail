@@ -7,6 +7,7 @@ import { DeveloperConsole } from './components/DeveloperConsole.tsx';
 import { WebhookModal } from './components/WebhookModal.tsx';
 import { NewAccountModal } from './components/NewAccountModal.tsx';
 import { DeveloperModal } from './components/DeveloperModal.tsx';
+import { ComposeModal } from './components/ComposeModal.tsx';
 import type { Account, EmailItem, ParsedSearchIntent, BatchActionType } from './types.ts';
 
 export default function App() {
@@ -24,6 +25,9 @@ export default function App() {
   // Sidebar Collapse state
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState<boolean>(false);
 
+  // Mobile Detail View state
+  const [isMobileDetailOpen, setIsMobileDetailOpen] = useState<boolean>(false);
+
   // Natural Language Smart Search State
   const [activeSearchQuery, setActiveSearchQuery] = useState<string>('');
   const [isSmartSearching, setIsSmartSearching] = useState<boolean>(false);
@@ -38,6 +42,7 @@ export default function App() {
   const [isWebhookModalOpen, setIsWebhookModalOpen] = useState<boolean>(false);
   const [isAccountModalOpen, setIsAccountModalOpen] = useState<boolean>(false);
   const [isDeveloperModalOpen, setIsDeveloperModalOpen] = useState<boolean>(false);
+  const [isComposeModalOpen, setIsComposeModalOpen] = useState<boolean>(false);
 
   // Fetch accounts
   const fetchAccounts = useCallback(async () => {
@@ -86,22 +91,16 @@ export default function App() {
     }
   }, [selectedAccountId, selectedCategory, alertFilterOnly, searchTerm]);
 
-  // Initial load and auto-seed if database is fresh
+  // Initial load and periodic 30s polling
   useEffect(() => {
-    const init = async () => {
-      await fetchAccounts();
-      const res = await fetch('/api/emails');
-      if (res.ok) {
-        const data = await res.json();
-        if (data.length === 0) {
-          // Auto-seed initial realistic data for instant rich preview
-          await fetch('/api/seed', { method: 'POST' });
-          await fetchAccounts();
-        }
-      }
-      await fetchEmails();
-    };
-    init();
+    fetchAccounts();
+    fetchEmails();
+
+    const interval = setInterval(() => {
+      fetchEmails();
+    }, 30000);
+
+    return () => clearInterval(interval);
   }, [fetchAccounts, fetchEmails]);
 
   // Handle seed action
@@ -325,6 +324,11 @@ export default function App() {
         currentView={currentView}
         onSelectView={setCurrentView}
         alertCount={alertCount}
+        onRefresh={() => {
+          fetchAccounts();
+          fetchEmails();
+        }}
+        loading={loading}
       />
 
       {/* Main Work Area */}
@@ -351,6 +355,7 @@ export default function App() {
             if (parsedIntent) handleClearSmartSearch();
             if (currentView !== 'feed') setCurrentView('feed');
           }}
+          onOpenComposeModal={() => setIsComposeModalOpen(true)}
           onOpenWebhookModal={() => setIsWebhookModalOpen(true)}
           onOpenAccountModal={() => setIsAccountModalOpen(true)}
           onOpenDeveloperModal={() => setIsDeveloperModalOpen(true)}
@@ -377,41 +382,47 @@ export default function App() {
           />
         ) : (
           /* Incident Feed & Inspection Drawer Work Area */
-          <>
+          <div className="flex-1 flex overflow-hidden w-full">
             {/* 2. Email Feed with Batch Management */}
-            <EmailList
-              emails={emails}
-              selectedEmailId={selectedEmailId}
-              onSelectEmail={(email) => {
-                setSelectedEmailId(email.id);
-                if (!email.is_read) {
-                  handleToggleRead(email);
-                }
-              }}
-              onToggleRead={handleToggleRead}
-              onDeleteEmail={handleDeleteEmail}
-              selectedEmailIds={selectedEmailIds}
-              onToggleSelectEmail={handleToggleSelectEmail}
-              onSelectAll={handleSelectAll}
-              onClearSelection={handleClearSelection}
-              onBatchAction={handleBatchAction}
-              isBatchLoading={isBatchLoading}
-              searchTerm={searchTerm}
-              onSearchChange={setSearchTerm}
-              activeCategoryLabel={getCategoryTitle()}
-              loading={loading}
-              parsedIntent={parsedIntent}
-              onClearSmartSearch={handleClearSmartSearch}
-            />
+            <div className={`h-full flex-shrink-0 ${isMobileDetailOpen ? 'hidden md:flex' : 'flex flex-1 md:flex-none'}`}>
+              <EmailList
+                emails={emails}
+                selectedEmailId={selectedEmailId}
+                onSelectEmail={(email) => {
+                  setSelectedEmailId(email.id);
+                  setIsMobileDetailOpen(true);
+                  if (!email.is_read) {
+                    handleToggleRead(email);
+                  }
+                }}
+                onToggleRead={handleToggleRead}
+                onDeleteEmail={handleDeleteEmail}
+                selectedEmailIds={selectedEmailIds}
+                onToggleSelectEmail={handleToggleSelectEmail}
+                onSelectAll={handleSelectAll}
+                onClearSelection={handleClearSelection}
+                onBatchAction={handleBatchAction}
+                isBatchLoading={isBatchLoading}
+                searchTerm={searchTerm}
+                onSearchChange={setSearchTerm}
+                activeCategoryLabel={getCategoryTitle()}
+                loading={loading}
+                parsedIntent={parsedIntent}
+                onClearSmartSearch={handleClearSmartSearch}
+              />
+            </div>
 
             {/* 3. Detail View with Outbound Sending Engine & Inspection Drawer */}
-            <EmailDetail
-              email={selectedEmail}
-              onGenerateSmartReply={handleGenerateSmartReply}
-              isGeneratingReply={isGeneratingReply}
-              onToggleRead={(email) => handleToggleRead(email)}
-            />
-          </>
+            <div className={`flex-1 h-full overflow-hidden ${!isMobileDetailOpen ? 'hidden md:flex' : 'flex'}`}>
+              <EmailDetail
+                email={selectedEmail}
+                onGenerateSmartReply={handleGenerateSmartReply}
+                isGeneratingReply={isGeneratingReply}
+                onToggleRead={(email) => handleToggleRead(email)}
+                onBack={() => setIsMobileDetailOpen(false)}
+              />
+            </div>
+          </div>
         )}
       </div>
 
@@ -441,6 +452,17 @@ export default function App() {
         isOpen={isDeveloperModalOpen}
         onClose={() => setIsDeveloperModalOpen(false)}
         onEmailIngested={() => {
+          fetchAccounts();
+          fetchEmails();
+        }}
+      />
+
+      {/* Compose & Outbound Dispatch Modal */}
+      <ComposeModal
+        isOpen={isComposeModalOpen}
+        onClose={() => setIsComposeModalOpen(false)}
+        accounts={accounts}
+        onEmailSent={() => {
           fetchAccounts();
           fetchEmails();
         }}
