@@ -19,7 +19,8 @@ import {
   ChevronLeft,
   User,
   AtSign,
-  Tag
+  Tag,
+  X
 } from 'lucide-react';
 import type { EmailItem } from '../types.ts';
 import { getCategoryBadgeStyle } from './EmailList.tsx';
@@ -58,6 +59,9 @@ export const EmailDetail: React.FC<EmailDetailProps> = ({
   const [sentSuccess, setSentSuccess] = useState(false);
   const [sentMeta, setSentMeta] = useState<{ messageId: string; dispatchedAt: string; provider?: string } | null>(null);
   const [showDraftEditor, setShowDraftEditor] = useState(false);
+  const [viewMode, setViewMode] = useState<'rich' | 'plain'>('rich');
+  const [isAiDrawerOpen, setIsAiDrawerOpen] = useState(false);
+  const isHtml = Boolean(email?.full_body && /<[a-z][\s\S]*>/i.test(email.full_body));
 
   // Dynamic Action Items State per email
   const [tasks, setTasks] = useState<ActionTask[]>([]);
@@ -71,6 +75,8 @@ export const EmailDetail: React.FC<EmailDetailProps> = ({
       setSentSuccess(false);
       return;
     }
+
+    setViewMode(/<[a-z][\s\S]*>/i.test(email.full_body) ? 'rich' : 'plain');
 
     // Heuristically construct action items from summary and content
     const items: ActionTask[] = [];
@@ -246,6 +252,44 @@ export const EmailDetail: React.FC<EmailDetailProps> = ({
             </div>
 
             <div className="flex items-center space-x-2 flex-shrink-0">
+              {isHtml && (
+                <div className="flex items-center rounded-lg bg-[#11131a] border border-[#262b3a] p-0.5 text-[11px] font-mono">
+                  <button
+                    onClick={() => setViewMode('rich')}
+                    className={`px-2 py-0.5 rounded transition-colors ${
+                      viewMode === 'rich'
+                        ? 'bg-amber-500/20 text-amber-300 font-bold border border-amber-500/30'
+                        : 'text-zinc-400 hover:text-zinc-200'
+                    }`}
+                  >
+                    HTML
+                  </button>
+                  <button
+                    onClick={() => setViewMode('plain')}
+                    className={`px-2 py-0.5 rounded transition-colors ${
+                      viewMode === 'plain'
+                        ? 'bg-amber-500/20 text-amber-300 font-bold border border-amber-500/30'
+                        : 'text-zinc-400 hover:text-zinc-200'
+                    }`}
+                  >
+                    Text
+                  </button>
+                </div>
+              )}
+
+              <button
+                onClick={() => setIsAiDrawerOpen((prev) => !prev)}
+                className={`px-2.5 py-1 rounded-md text-[11px] font-mono border transition-colors flex items-center gap-1.5 ${
+                  isAiDrawerOpen
+                    ? 'bg-amber-500/20 text-amber-300 border-amber-500/40 font-semibold'
+                    : 'bg-[#151821] text-zinc-300 border-[#262b3a] hover:text-white'
+                }`}
+                title="Toggle Gemini Intelligence Drawer"
+              >
+                <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+                <span>{isAiDrawerOpen ? 'Close AI' : 'AI Deck'}</span>
+              </button>
+
               <button
                 onClick={() => onToggleRead(email)}
                 className={`px-2.5 py-1 rounded-md text-[11px] font-mono border transition-colors ${
@@ -284,10 +328,27 @@ export const EmailDetail: React.FC<EmailDetailProps> = ({
         </div>
 
         {/* Email Full Body */}
-        <div className="p-6 flex-1 overflow-y-auto space-y-4 font-sans text-xs text-zinc-300 leading-relaxed">
-          <div className="p-4 rounded-xl bg-[#0c0e14] border border-[#1a1d27] font-mono whitespace-pre-wrap leading-relaxed text-[12px] text-zinc-200 selection:bg-amber-500/20">
-            {email.full_body}
-          </div>
+        <div className="p-4 sm:p-6 flex-1 overflow-y-auto space-y-4 font-sans text-xs text-zinc-300 leading-relaxed flex flex-col">
+          {viewMode === 'rich' && isHtml ? (
+            <div className="w-full flex-1 min-h-[500px] rounded-xl overflow-hidden border border-[#1a1d27] bg-[#0c0e14] shadow-inner flex flex-col">
+              <iframe
+                srcDoc={`<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><style>
+                  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size: 14px; line-height: 1.6; color: #f4f4f5; background: #0c0e14; margin: 0; padding: 20px; word-break: break-word; }
+                  a { color: #f59e0b; text-decoration: underline; }
+                  img { max-width: 100% !important; height: auto !important; }
+                  table { max-width: 100% !important; }
+                  pre, code { background: #151821; color: #fbbf24; border-radius: 4px; padding: 2px 6px; font-family: monospace; }
+                </style></head><body>${email.full_body}</body></html>`}
+                sandbox="allow-popups allow-popups-to-escape-sandbox"
+                className="w-full flex-1 min-h-[500px] border-0"
+                title="Email Body"
+              />
+            </div>
+          ) : (
+            <div className="p-4 rounded-xl bg-[#0c0e14] border border-[#1a1d27] font-mono whitespace-pre-wrap leading-relaxed text-[12px] text-zinc-200 selection:bg-amber-500/20">
+              {email.full_body}
+            </div>
+          )}
 
           {/* Thread metadata footer */}
           <div className="pt-4 border-t border-[#1a1d27] flex items-center justify-between text-[11px] text-zinc-400 font-mono">
@@ -297,26 +358,36 @@ export const EmailDetail: React.FC<EmailDetailProps> = ({
         </div>
       </div>
 
-      {/* RIGHT COLUMN: Gemini Intelligence Deck & Inspection Drawer (40% width) */}
-      <div 
-        id="gemini-intelligence-drawer"
-        className="w-full lg:w-[420px] xl:w-[460px] bg-[#0c0e14] flex flex-col h-full overflow-y-auto border-l border-[#1a1d27] flex-shrink-0"
-      >
-        {/* Intelligence Drawer Header */}
-        <div className="p-4 border-b border-[#1a1d27] bg-[#11131a] flex items-center justify-between">
-          <div className="flex items-center space-x-2">
-            <div className="w-6 h-6 rounded-md bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400">
-              <Sparkles className="w-3.5 h-3.5" />
+      {/* RIGHT COLUMN: Gemini Intelligence Deck & Inspection Drawer */}
+      {isAiDrawerOpen && (
+        <div 
+          id="gemini-intelligence-drawer"
+          className="w-full lg:w-[380px] xl:w-[420px] bg-[#0c0e14] flex flex-col h-full overflow-y-auto border-l border-[#1a1d27] flex-shrink-0 animate-fade-in"
+        >
+          {/* Intelligence Drawer Header */}
+          <div className="p-4 border-b border-[#1a1d27] bg-[#11131a] flex items-center justify-between">
+            <div className="flex items-center space-x-2">
+              <div className="w-6 h-6 rounded-md bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400">
+                <Sparkles className="w-3.5 h-3.5" />
+              </div>
+              <span className="text-xs font-semibold text-zinc-100 tracking-tight">
+                Gemini Intelligence Deck
+              </span>
             </div>
-            <span className="text-xs font-semibold text-zinc-100 tracking-tight">
-              Gemini Intelligence Deck
-            </span>
-          </div>
 
-          <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-[#151821] text-zinc-400 border border-[#262b3a]">
-            INSPECTOR
-          </span>
-        </div>
+            <div className="flex items-center space-x-1.5">
+              <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-[#151821] text-zinc-400 border border-[#262b3a]">
+                INSPECTOR
+              </span>
+              <button
+                onClick={() => setIsAiDrawerOpen(false)}
+                className="p-1 rounded text-zinc-400 hover:text-zinc-200 hover:bg-[#151821]"
+                title="Close Drawer"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          </div>
 
         <div className="p-4 space-y-4 flex-1 overflow-y-auto text-xs">
           {/* 1. Urgency Score Meter */}
@@ -523,6 +594,7 @@ export const EmailDetail: React.FC<EmailDetailProps> = ({
           </div>
         </div>
       </div>
-    </div>
-  );
+    )}
+  </div>
+);
 };

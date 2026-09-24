@@ -262,6 +262,48 @@ export async function createApp() {
     }
   });
 
+  // 5b. Unified multi-account synchronization (Gmail IMAP + Business mail)
+  app.post('/api/sync/all', async (req, res) => {
+    try {
+      const { syncGmailAccount } = await import('./src/lib/imap-sync.ts');
+      const allAccounts = await db.select().from(accounts);
+      let totalImported = 0;
+      const syncReports: Array<{ email: string; imported: number; status: string }> = [];
+
+      for (const acc of allAccounts) {
+        let appPass = '';
+        if (acc.oauth_tokens && typeof acc.oauth_tokens === 'object' && 'app_password' in acc.oauth_tokens) {
+          appPass = String((acc.oauth_tokens as any).app_password);
+        } else if (acc.email_address === process.env.GMAIL_USER) {
+          appPass = process.env.GMAIL_APP_PASSWORD || '';
+        } else if (acc.email_address === process.env.BACKUPE9_USER) {
+          appPass = process.env.BACKUPE9_APP_PASSWORD || '';
+        }
+
+        if (appPass && acc.email_address.includes('@gmail.com')) {
+          try {
+            const syncResult = await syncGmailAccount(acc.email_address, appPass, 30);
+            totalImported += syncResult.imported;
+            syncReports.push({ email: acc.email_address, imported: syncResult.imported, status: syncResult.success ? 'ok' : (syncResult.error || 'unknown') });
+          } catch (syncErr) {
+            console.warn(`[Sync] Error syncing ${acc.email_address}:`, syncErr);
+            syncReports.push({ email: acc.email_address, imported: 0, status: 'error' });
+          }
+        }
+      }
+
+      res.json({
+        success: true,
+        imported: totalImported,
+        reports: syncReports,
+        syncedAt: new Date().toISOString(),
+      });
+    } catch (error) {
+      console.error('Unified sync error:', error);
+      res.status(500).json({ error: 'Failed to sync accounts' });
+    }
+  });
+
   // 6. Get emails with filtering
   app.get('/api/emails', async (req, res) => {
     try {

@@ -117,6 +117,19 @@ export default function App() {
     }
   };
 
+  // Unified multi-account background sync + refetch
+  const handleSyncAll = async () => {
+    try {
+      setLoading(true);
+      await fetch('/api/sync/all', { method: 'POST' });
+    } catch (err) {
+      console.warn('Sync all trigger error:', err);
+    } finally {
+      await fetchAccounts();
+      await fetchEmails();
+    }
+  };
+
   // Toggle email read status
   const handleToggleRead = async (email: EmailItem, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
@@ -324,10 +337,7 @@ export default function App() {
         currentView={currentView}
         onSelectView={setCurrentView}
         alertCount={alertCount}
-        onRefresh={() => {
-          fetchAccounts();
-          fetchEmails();
-        }}
+        onRefresh={handleSyncAll}
         loading={loading}
       />
 
@@ -359,10 +369,7 @@ export default function App() {
           onOpenWebhookModal={() => setIsWebhookModalOpen(true)}
           onOpenAccountModal={() => setIsAccountModalOpen(true)}
           onOpenDeveloperModal={() => setIsDeveloperModalOpen(true)}
-          onRefresh={() => {
-            if (parsedIntent) handleClearSmartSearch();
-            else fetchEmails();
-          }}
+          onRefresh={handleSyncAll}
           onSeedData={handleSeedData}
           loading={loading}
           isCollapsed={isSidebarCollapsed}

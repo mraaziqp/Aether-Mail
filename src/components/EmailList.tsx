@@ -119,7 +119,7 @@ export const EmailList: React.FC<EmailListProps> = ({
   return (
     <div 
       id="email-feed-column"
-      className="w-full md:w-96 xl:w-[440px] bg-[#090a0f] border-r border-[#1a1d27] flex flex-col h-full flex-shrink-0 select-none"
+      className="w-full md:w-80 lg:w-[340px] xl:w-[380px] bg-[#090a0f] border-r border-[#1a1d27] flex flex-col h-full flex-shrink-0 select-none"
     >
       {/* Header Bar */}
       <div className="p-3 border-b border-[#1a1d27] bg-[#11131a] sticky top-0 z-10 space-y-2">

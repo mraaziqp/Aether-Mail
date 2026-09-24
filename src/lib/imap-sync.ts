@@ -1,7 +1,7 @@
 import { ImapFlow } from 'imapflow';
 import { simpleParser } from 'mailparser';
 import { db } from '../db/index.ts';
-import { emails, accounts, NewEmail, NewAccount } from '../db/schema.ts';
+import { emails, accounts, type NewEmail, type NewAccount } from '../db/schema.ts';
 import { eq } from 'drizzle-orm';
 import { processEmailWithGemini } from './gemini.ts';
 
@@ -140,11 +140,20 @@ export async function syncGmailAccount(
       lock.release();
     }
 
-    await client.logout();
     return { success: true, imported };
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : String(err);
     console.error(`[IMAP Sync Error for ${cleanEmail}]:`, errorMsg);
     return { success: false, imported: 0, error: errorMsg };
+  } finally {
+    try {
+      if (client.authenticated) {
+        await client.logout();
+      } else {
+        client.close();
+      }
+    } catch {
+      try { client.close(); } catch {}
+    }
   }
 }

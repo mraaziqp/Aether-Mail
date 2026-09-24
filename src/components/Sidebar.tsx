@@ -97,7 +97,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     <aside 
       id="command-sidebar"
       className={`${
-        isCollapsed ? 'w-16' : 'w-64 xl:w-72'
+        isCollapsed ? 'w-16' : 'w-56 lg:w-60 xl:w-64'
       } bg-[#0c0e14] border-r border-[#1a1d27] flex flex-col h-full select-none text-zinc-300 transition-all duration-200 flex-shrink-0 relative z-10`}
     >
       {/* Brand Header */}

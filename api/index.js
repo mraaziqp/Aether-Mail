@@ -276,12 +276,24 @@ async function syncGmailAccount(emailAddress, appPassword, limit = 20) {
     } finally {
       lock.release();
     }
-    await client.logout();
     return { success: true, imported };
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : String(err);
     console.error(`[IMAP Sync Error for ${cleanEmail}]:`, errorMsg);
     return { success: false, imported: 0, error: errorMsg };
+  } finally {
+    try {
+      if (client.authenticated) {
+        await client.logout();
+      } else {
+        client.close();
+      }
+    } catch {
+      try {
+        client.close();
+      } catch {
+      }
+    }
   }
 }
 var init_imap_sync = __esm({
@@ -2205,6 +2217,43 @@ Action Required: Immediate human attention flagged by Gemini 2.5 Flash.`;
     } catch (error) {
       console.error("Add account error:", error);
       res.status(500).json({ error: "Failed to add account" });
+    }
+  });
+  app.post("/api/sync/all", async (req, res) => {
+    try {
+      const { syncGmailAccount: syncGmailAccount2 } = await Promise.resolve().then(() => (init_imap_sync(), imap_sync_exports));
+      const allAccounts = await db.select().from(accounts);
+      let totalImported = 0;
+      const syncReports = [];
+      for (const acc of allAccounts) {
+        let appPass = "";
+        if (acc.oauth_tokens && typeof acc.oauth_tokens === "object" && "app_password" in acc.oauth_tokens) {
+          appPass = String(acc.oauth_tokens.app_password);
+        } else if (acc.email_address === process.env.GMAIL_USER) {
+          appPass = process.env.GMAIL_APP_PASSWORD || "";
+        } else if (acc.email_address === process.env.BACKUPE9_USER) {
+          appPass = process.env.BACKUPE9_APP_PASSWORD || "";
+        }
+        if (appPass && acc.email_address.includes("@gmail.com")) {
+          try {
+            const syncResult = await syncGmailAccount2(acc.email_address, appPass, 30);
+            totalImported += syncResult.imported;
+            syncReports.push({ email: acc.email_address, imported: syncResult.imported, status: syncResult.success ? "ok" : syncResult.error || "unknown" });
+          } catch (syncErr) {
+            console.warn(`[Sync] Error syncing ${acc.email_address}:`, syncErr);
+            syncReports.push({ email: acc.email_address, imported: 0, status: "error" });
+          }
+        }
+      }
+      res.json({
+        success: true,
+        imported: totalImported,
+        reports: syncReports,
+        syncedAt: (/* @__PURE__ */ new Date()).toISOString()
+      });
+    } catch (error) {
+      console.error("Unified sync error:", error);
+      res.status(500).json({ error: "Failed to sync accounts" });
     }
   });
   app.get("/api/emails", async (req, res) => {
