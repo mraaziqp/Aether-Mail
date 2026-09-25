@@ -19,7 +19,9 @@ import {
   ShieldAlert,
   Activity,
   CheckCircle2,
-  LogOut
+  LogOut,
+  Palette,
+  ShieldCheck
 } from 'lucide-react';
 import type { Account, EmailCategory, EmailItem } from '../types.ts';
 
@@ -45,6 +47,8 @@ interface SidebarProps {
   onSelectView?: (view: 'feed' | 'developer') => void;
   onLogout?: () => void;
   onOpenProfileModal?: () => void;
+  currentTheme?: string;
+  onOpenThemeModal?: () => void;
 }
 
 const CATEGORIES: { 
@@ -85,6 +89,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onSelectView,
   onLogout,
   onOpenProfileModal,
+  currentTheme = 'obsidian',
+  onOpenThemeModal,
 }) => {
   const alertCount = emails.filter((e) => e.requires_alert && !e.is_read).length;
   const unreadCount = emails.filter((e) => !e.is_read).length;
@@ -434,23 +440,42 @@ export const Sidebar: React.FC<SidebarProps> = ({
           }}
           title="Developer & Bot REST API (Root Access)"
           className={`w-full flex items-center ${
-            isCollapsed ? 'justify-center p-2' : 'space-x-2 px-3 py-2'
-          } rounded-lg text-xs font-medium transition-all ${
+            isCollapsed ? 'justify-center p-2' : 'space-x-2 px-3 py-2.5'
+          } rounded-xl text-xs font-medium transition-all ${
             currentView === 'developer'
-              ? 'bg-amber-500/20 text-amber-300 font-bold border border-amber-500/50 shadow-sm'
-              : 'bg-[#11131a] hover:bg-[#151821] text-amber-300/90 hover:text-amber-300 border border-amber-500/30'
+              ? 'bg-amber-500 text-black font-extrabold border border-amber-400 shadow-md ring-1 ring-amber-400/40'
+              : 'bg-[#141824] hover:bg-[#1a2133] text-amber-300 border border-amber-500/40 hover:border-amber-400/60'
           }`}
         >
-          <Terminal className="w-3.5 h-3.5 flex-shrink-0 text-amber-400" />
+          <Terminal className="w-4 h-4 flex-shrink-0" />
           {!isCollapsed && (
             <span className="flex items-center justify-between w-full font-mono text-[11px]">
-              <span>Developer &amp; Agents</span>
-              <span className="text-[9px] px-1 py-0.2 rounded bg-amber-500/20 text-amber-300">
-                ROOT API
+              <span className="font-bold">⚡ Admin Dashboard</span>
+              <span className={`text-[9px] px-1.5 py-0.5 rounded font-mono font-bold ${
+                currentView === 'developer' ? 'bg-black text-amber-400' : 'bg-amber-500/20 text-amber-300'
+              }`}>
+                NOC ROOT
               </span>
             </span>
           )}
         </button>
+
+        {/* Theme Manager Button */}
+        {onOpenThemeModal && !isCollapsed && (
+          <button
+            onClick={onOpenThemeModal}
+            className="w-full flex items-center justify-between px-3 py-2 rounded-xl bg-[#11131a] hover:bg-[#151821] text-zinc-300 hover:text-zinc-100 border border-[#1a1d27] text-[11px] font-mono transition-all"
+            title="Open Theme Manager"
+          >
+            <div className="flex items-center space-x-2">
+              <Palette className="w-3.5 h-3.5 text-amber-400" />
+              <span>Theme Style</span>
+            </div>
+            <span className="text-[10px] text-zinc-400 capitalize px-1.5 py-0.2 rounded bg-[#090a0f] border border-[#1a1d27]">
+              {currentTheme}
+            </span>
+          </button>
+        )}
 
         {/* Simulate Webhook */}
         {!isCollapsed && (

@@ -198,10 +198,22 @@ async function syncGmailAccount(emailAddress, appPassword, limit = 20) {
     logger: false,
     tls: {
       rejectUnauthorized: false
-    }
+    },
+    clientInfo: {
+      name: "AetherMail",
+      version: "2.5"
+    },
+    connectionTimeout: 1e4,
+    greetingTimeout: 8e3,
+    socketTimeout: 15e3
   });
   try {
-    await client.connect();
+    await Promise.race([
+      client.connect(),
+      new Promise(
+        (_, reject) => setTimeout(() => reject(new Error("IMAP connection timed out after 12s")), 12e3)
+      )
+    ]);
     const [existingAccount] = await db.select().from(accounts).where(eq5(accounts.email_address, cleanEmail)).limit(1);
     const accountId = existingAccount ? existingAccount.id : `acc_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
     if (!existingAccount) {
@@ -640,6 +652,8 @@ async function dispatchViaStalwartSmtp(params) {
   const mailOptions = {
     from: fromDisplay,
     to: params.to,
+    cc: params.cc,
+    bcc: params.bcc,
     subject: params.subject,
     html: params.htmlBody,
     text: params.textBody || params.htmlBody.replace(/<[^>]*>/g, ""),
@@ -751,7 +765,9 @@ async function sendEmailAction(params) {
     } else {
       const relayResult = await dispatchViaStalwartSmtp({
         from: senderAddress,
-        to: toList.join(", "),
+        to: toList,
+        cc: ccList.length > 0 ? ccList : void 0,
+        bcc: bccList.length > 0 ? bccList : void 0,
         subject: subject.trim(),
         htmlBody,
         replyTo: senderAddress

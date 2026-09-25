@@ -148,7 +148,9 @@ export async function sendEmailAction(params: SendEmailParams): Promise<SendEmai
     else {
       const relayResult = await dispatchViaStalwartSmtp({
         from: senderAddress,
-        to: toList.join(', '),
+        to: toList,
+        cc: ccList.length > 0 ? ccList : undefined,
+        bcc: bccList.length > 0 ? bccList : undefined,
         subject: subject.trim(),
         htmlBody,
         replyTo: senderAddress,

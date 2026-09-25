@@ -53,4 +53,45 @@
   border-color: #262b3a;
 }
 
+/* Dynamic Multi-Theme Engine */
+body[data-theme="midnight"] {
+  background-color: #070614 !important;
+}
+
+body[data-theme="midnight"] header,
+body[data-theme="midnight"] aside {
+  background-color: #09081a !important;
+  border-color: #1f1b3d !important;
+}
+
+body[data-theme="navy"] {
+  background-color: #040914 !important;
+}
+
+body[data-theme="navy"] header,
+body[data-theme="navy"] aside {
+  background-color: #060e20 !important;
+  border-color: #152648 !important;
+}
+
+body[data-theme="matrix"] {
+  background-color: #030805 !important;
+}
+
+body[data-theme="matrix"] header,
+body[data-theme="matrix"] aside {
+  background-color: #050e09 !important;
+  border-color: #122b1c !important;
+}
+
+body[data-theme="crimson"] {
+  background-color: #0c0608 !important;
+}
+
+body[data-theme="crimson"] header,
+body[data-theme="crimson"] aside {
+  background-color: #130a0e !important;
+  border-color: #331520 !important;
+}
+
 

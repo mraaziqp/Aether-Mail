@@ -298,19 +298,19 @@ export const EmailList: React.FC<EmailListProps> = ({
               <div
                 key={email.id}
                 onClick={() => onSelectEmail(email)}
-                className={`p-3 transition-all cursor-pointer relative group border-l-2 ${
+                className={`p-3.5 sm:p-4 transition-all cursor-pointer relative group border-l-2 mb-1 rounded-r-xl ${
                   isSelected
-                    ? 'bg-[#151821] border-l-amber-400 text-zinc-100 shadow-md'
+                    ? 'bg-[#151821] border-l-amber-400 text-zinc-100 shadow-md ring-1 ring-amber-400/20'
                     : isChecked
                     ? 'bg-[#12141c] border-l-amber-500/70 text-zinc-200'
                     : !email.is_read
-                    ? 'bg-[#0e1017] hover:bg-[#131620] border-l-amber-400/40 text-zinc-200'
+                    ? 'bg-[#0e1017] hover:bg-[#131620] border-l-amber-400/50 text-zinc-200'
                     : 'bg-[#090a0f] hover:bg-[#0f1118] border-l-transparent text-zinc-400'
                 }`}
               >
                 {/* Top Row: Checkbox, Sender Avatar, Sender Name, Status Tag & Time Badge */}
-                <div className="flex items-center justify-between gap-2 mb-1.5">
-                  <div className="flex items-center space-x-2 min-w-0">
+                <div className="flex items-center justify-between gap-2.5 mb-2">
+                  <div className="flex items-center space-x-2.5 min-w-0">
                     <input
                       type="checkbox"
                       checked={isChecked}
@@ -319,12 +319,12 @@ export const EmailList: React.FC<EmailListProps> = ({
                         onToggleSelectEmail(email.id, e as any);
                       }}
                       onClick={(e) => e.stopPropagation()}
-                      className="w-3.5 h-3.5 rounded bg-[#090a0f] border-[#262b3a] text-amber-500 focus:ring-0 focus:ring-offset-0 cursor-pointer flex-shrink-0"
+                      className="w-4 h-4 rounded bg-[#090a0f] border-[#262b3a] text-amber-500 focus:ring-0 focus:ring-offset-0 cursor-pointer flex-shrink-0"
                     />
 
                     {/* Sender Avatar */}
                     <div 
-                      className={`w-6 h-6 rounded-full border flex items-center justify-center text-[10px] font-mono font-bold flex-shrink-0 ${avatarStyle}`}
+                      className={`w-7 h-7 rounded-lg border flex items-center justify-center text-xs font-mono font-bold flex-shrink-0 shadow-sm ${avatarStyle}`}
                       title={email.sender}
                     >
                       {initials}
@@ -340,9 +340,9 @@ export const EmailList: React.FC<EmailListProps> = ({
                   </div>
 
                   {/* Status Tag & Time Badge */}
-                  <div className="flex items-center space-x-1.5 flex-shrink-0">
+                  <div className="flex items-center space-x-2 flex-shrink-0">
                     <span 
-                      className={`text-[9px] font-mono font-bold px-1.5 py-0.2 rounded border flex items-center gap-1 ${statusTag.bg} ${statusTag.text} ${statusTag.border}`}
+                      className={`text-[9px] font-mono font-bold px-2 py-0.5 rounded-full border flex items-center gap-1 ${statusTag.bg} ${statusTag.text} ${statusTag.border}`}
                     >
                       {statusTag.pulse && (
                         <span className="w-1.5 h-1.5 rounded-full bg-rose-400 animate-ping" />
@@ -350,17 +350,17 @@ export const EmailList: React.FC<EmailListProps> = ({
                       {statusTag.label}
                     </span>
 
-                    <span className="text-[10px] text-zinc-400 font-mono px-1 py-0.2 rounded bg-[#11131a] border border-[#1a1d27]">
+                    <span className="text-[10px] text-zinc-400 font-mono px-1.5 py-0.5 rounded bg-[#11131a] border border-[#1a1d27]">
                       {formatRelativeTime(email.received_at)}
                     </span>
                   </div>
                 </div>
 
                 {/* Subject Line */}
-                <div className="mb-1.5 pl-6">
+                <div className="mb-2 pl-6 sm:pl-7">
                   <h3
-                    className={`text-xs truncate ${
-                      !email.is_read ? 'font-medium text-zinc-100' : 'text-zinc-300'
+                    className={`text-xs sm:text-sm truncate leading-snug ${
+                      !email.is_read ? 'font-semibold text-zinc-100' : 'text-zinc-300'
                     }`}
                   >
                     {email.subject}
@@ -368,8 +368,8 @@ export const EmailList: React.FC<EmailListProps> = ({
                 </div>
 
                 {/* Gemini 1-Sentence Summary Highlight Card */}
-                <div className="ml-6 p-2 rounded-lg bg-[#090a0f] border border-[#1a1d27] text-[11px] leading-relaxed text-zinc-300 group-hover:border-[#262b3a] transition-colors">
-                  <div className="flex items-start gap-1.5">
+                <div className="ml-6 sm:ml-7 p-2.5 rounded-xl bg-[#0b0d13] border border-[#1a1d27] text-xs leading-relaxed text-zinc-300 group-hover:border-[#262b3a] transition-colors shadow-sm">
+                  <div className="flex items-start gap-2">
                     <Sparkles className="w-3.5 h-3.5 text-amber-400 flex-shrink-0 mt-0.5" />
                     <p className="line-clamp-2 text-zinc-300 font-normal">
                       {email.ai_summary}
@@ -378,23 +378,23 @@ export const EmailList: React.FC<EmailListProps> = ({
                 </div>
 
                 {/* Bottom Row: Category Badge & Quick Actions */}
-                <div className="mt-2 ml-6 flex items-center justify-between">
-                  <div className="flex items-center space-x-1.5 flex-wrap gap-1">
+                <div className="mt-2.5 ml-6 sm:ml-7 flex items-center justify-between">
+                  <div className="flex items-center space-x-2 flex-wrap gap-1">
                     <span
-                      className={`text-[9px] uppercase font-mono tracking-wider px-2 py-0.5 rounded border ${categoryStyle}`}
+                      className={`text-[9px] uppercase font-mono tracking-wider px-2 py-0.5 rounded-md border ${categoryStyle}`}
                     >
                       {email.category}
                     </span>
                     {(email.account_email?.includes('arpcloudsolutions.co.za') || email.sender?.includes('arpcloudsolutions.co.za')) && (
-                      <span className="text-[9px] uppercase font-mono font-semibold tracking-wider px-1.5 py-0.5 rounded bg-emerald-950/80 text-emerald-300 border border-emerald-600/60 flex items-center gap-1 shadow-sm">
+                      <span className="text-[9px] uppercase font-mono font-bold tracking-wider px-2 py-0.5 rounded-md bg-emerald-950/80 text-emerald-300 border border-emerald-600/60 flex items-center gap-1 shadow-sm">
                         <span>🏢</span>
-                        <span>BUSINESS</span>
+                        <span>BUSINESS MAIL</span>
                       </span>
                     )}
                     {email.subject.toLowerCase().includes('payfast') && (
-                      <span className="text-[9px] uppercase font-mono font-bold tracking-wider px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/60 flex items-center gap-1 shadow-sm">
+                      <span className="text-[9px] uppercase font-mono font-bold tracking-wider px-2 py-0.5 rounded-md bg-amber-500/20 text-amber-300 border border-amber-500/60 flex items-center gap-1 shadow-sm">
                         <span>💳</span>
-                        <span>PAYFAST MERCHANT</span>
+                        <span>PAYFAST GATEWAY</span>
                       </span>
                     )}
                   </div>

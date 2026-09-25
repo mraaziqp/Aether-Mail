@@ -35,10 +35,22 @@ export async function syncGmailAccount(
     tls: {
       rejectUnauthorized: false,
     },
+    clientInfo: {
+      name: 'AetherMail',
+      version: '2.5',
+    },
+    connectionTimeout: 10000,
+    greetingTimeout: 8000,
+    socketTimeout: 15000,
   });
 
   try {
-    await client.connect();
+    await Promise.race([
+      client.connect(),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('IMAP connection timed out after 12s')), 12000)
+      ),
+    ]);
 
     // Ensure account exists in database
     const [existingAccount] = await db

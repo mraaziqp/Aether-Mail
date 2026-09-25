@@ -244,7 +244,7 @@ export const EmailDetail: React.FC<EmailDetailProps> = ({
       {/* LEFT COLUMN: Full Email Rendering (60% on desktop) */}
       <div className="flex-1 flex flex-col h-full border-r border-[#1a1d27] bg-[#090a0f] overflow-y-auto">
         {/* Email Header Bar */}
-        <div className="p-5 border-b border-[#1a1d27] bg-[#0c0e14] space-y-4">
+        <div className="p-6 sm:p-7 border-b border-[#1a1d27] bg-[#0c0e14] space-y-5">
           <div className="flex items-start justify-between gap-4">
             <div className="flex items-center gap-3">
               {onBack && (
@@ -257,7 +257,7 @@ export const EmailDetail: React.FC<EmailDetailProps> = ({
                   <span className="text-[11px] font-mono">Back</span>
                 </button>
               )}
-              <h1 className="text-base font-bold text-zinc-100 tracking-tight leading-snug">
+              <h1 className="text-lg sm:text-xl font-extrabold text-zinc-100 tracking-tight leading-snug">
                 {email.subject}
               </h1>
             </div>

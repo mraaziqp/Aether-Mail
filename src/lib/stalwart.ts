@@ -116,6 +116,8 @@ export async function provisionStalwartMailbox(emailAddress: string, secretHash:
 export async function dispatchViaStalwartSmtp(params: {
   from: string;
   to: string | string[];
+  cc?: string | string[];
+  bcc?: string | string[];
   subject: string;
   htmlBody: string;
   textBody?: string;
@@ -150,6 +152,8 @@ export async function dispatchViaStalwartSmtp(params: {
   const mailOptions = {
     from: fromDisplay,
     to: params.to,
+    cc: params.cc,
+    bcc: params.bcc,
     subject: params.subject,
     html: params.htmlBody,
     text: params.textBody || params.htmlBody.replace(/<[^>]*>/g, ''),

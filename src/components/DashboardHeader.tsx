@@ -13,7 +13,9 @@ import {
   Activity,
   RefreshCw,
   Bell,
-  LogOut
+  LogOut,
+  Palette,
+  Shield
 } from 'lucide-react';
 import type { ParsedSearchIntent, Account } from '../types.ts';
 
@@ -38,6 +40,8 @@ interface DashboardHeaderProps {
   onRequestNotificationPermission?: () => void;
   onLogout?: () => void;
   onOpenProfileModal?: () => void;
+  currentTheme?: string;
+  onOpenThemeModal?: () => void;
 }
 
 const SAMPLE_QUERIES = [
@@ -67,6 +71,8 @@ export const DashboardHeader: React.FC<DashboardHeaderProps> = ({
   onRequestNotificationPermission,
   onLogout,
   onOpenProfileModal,
+  currentTheme = 'obsidian',
+  onOpenThemeModal,
 }) => {
   const [isFocused, setIsFocused] = useState(false);
 
@@ -174,11 +180,12 @@ export const DashboardHeader: React.FC<DashboardHeaderProps> = ({
 
       {/* Right: Telemetry & View Mode Switcher */}
       <div className="flex items-center space-x-2 flex-shrink-0">
+        {/* Prominent Admin NOC Console View Switcher */}
         {onSelectView && (
           <div className="flex items-center p-0.5 rounded-lg bg-[#11131a] border border-[#1a1d27]">
             <button
               onClick={() => onSelectView('feed')}
-              className={`flex items-center space-x-1.5 px-2.5 py-1 rounded-md text-xs font-mono transition-all ${
+              className={`flex items-center space-x-1.5 px-3 py-1.5 rounded-md text-xs font-mono transition-all ${
                 currentView === 'feed'
                   ? 'bg-amber-500/20 text-amber-300 font-bold border border-amber-500/30'
                   : 'text-zinc-400 hover:text-zinc-200'
@@ -192,16 +199,31 @@ export const DashboardHeader: React.FC<DashboardHeaderProps> = ({
 
             <button
               onClick={() => onSelectView('developer')}
-              className={`flex items-center space-x-1.5 px-2.5 py-1 rounded-md text-xs font-mono transition-all ${
+              className={`flex items-center space-x-1.5 px-3 py-1.5 rounded-md text-xs font-mono transition-all font-semibold ${
                 currentView === 'developer'
-                  ? 'bg-amber-500/20 text-amber-300 font-bold border border-amber-500/30'
-                  : 'text-zinc-400 hover:text-zinc-200'
+                  ? 'bg-amber-500 text-black font-extrabold border border-amber-400 shadow-md ring-1 ring-amber-400/40'
+                  : 'text-amber-400/90 hover:text-amber-300 hover:bg-amber-500/10'
               }`}
+              title="Open Admin Dashboard & NOC Console (PayFast, Webhooks, Bot API)"
             >
-              <Terminal className="w-3.5 h-3.5" />
-              <span>Developer &amp; Agents</span>
+              <Terminal className="w-3.5 h-3.5 flex-shrink-0" />
+              <span>⚡ Admin Dashboard</span>
             </button>
           </div>
+        )}
+
+        {/* Theme Switcher Button */}
+        {onOpenThemeModal && (
+          <button
+            onClick={onOpenThemeModal}
+            className="flex items-center space-x-1.5 px-2.5 py-1.5 rounded-lg bg-[#11131a] hover:bg-[#151821] border border-[#1a1d27] hover:border-[#262b3a] text-zinc-300 hover:text-zinc-100 text-xs transition-colors"
+            title="Theme Manager (Obsidian, Midnight, Navy, Matrix, Crimson)"
+          >
+            <Palette className="w-3.5 h-3.5 text-amber-400" />
+            <span className="text-[11px] font-mono hidden sm:inline capitalize">
+              {currentTheme}
+            </span>
+          </button>
         )}
 
         {/* Jarvis Desktop Notification & Audio Alert toggle */}

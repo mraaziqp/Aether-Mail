@@ -11,6 +11,7 @@ import { DeveloperModal } from './components/DeveloperModal.tsx';
 import { ComposeModal } from './components/ComposeModal.tsx';
 import { LoginScreen } from './components/LoginScreen.tsx';
 import { ProfileModal } from './components/ProfileModal.tsx';
+import { ThemeManagerModal, type ThemeId } from './components/ThemeManagerModal.tsx';
 import type { Account, EmailItem, ParsedSearchIntent, BatchActionType } from './types.ts';
 
 export default function App() {
@@ -63,6 +64,21 @@ export default function App() {
   });
   const [isProfileModalOpen, setIsProfileModalOpen] = useState<boolean>(false);
 
+  // Theme Manager State & Persistence
+  const [currentTheme, setCurrentTheme] = useState<ThemeId>(() => {
+    try {
+      return (localStorage.getItem('aethermail_theme') as ThemeId) || 'obsidian';
+    } catch {
+      return 'obsidian';
+    }
+  });
+  const [isThemeModalOpen, setIsThemeModalOpen] = useState<boolean>(false);
+
+  useEffect(() => {
+    document.body.setAttribute('data-theme', currentTheme);
+    localStorage.setItem('aethermail_theme', currentTheme);
+  }, [currentTheme]);
+
   const handleLoginSuccess = (user: {
     username: string;
     displayName: string;
@@ -92,12 +108,17 @@ export default function App() {
     isPayFast: boolean;
   } | null>(null);
 
-  // High-tech synthesized Jarvis alert chime
+  // High-tech synthesized Jarvis alert chime with AudioContext singleton to prevent hardware channel leaks
+  const audioCtxRef = useRef<AudioContext | null>(null);
+
   const playJarvisChime = useCallback(() => {
     try {
       const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
       if (!AudioCtx) return;
-      const ctx = new AudioCtx();
+      if (!audioCtxRef.current || audioCtxRef.current.state === 'closed') {
+        audioCtxRef.current = new AudioCtx();
+      }
+      const ctx = audioCtxRef.current;
       if (ctx.state === 'suspended') {
         ctx.resume();
       }
@@ -259,25 +280,38 @@ export default function App() {
     [selectedAccountId, selectedCategory, alertFilterOnly, searchTerm, playJarvisChime]
   );
 
-  // Initial load and periodic 20s real-time auto-sync + focus trigger
+  // Dedicated Background Sync Ref Guard
+  const isSyncRunningRef = useRef(false);
+
+  // Initial accounts load
   useEffect(() => {
     fetchAccounts();
+  }, [fetchAccounts]);
+
+  // Initial & Filter-based emails load
+  useEffect(() => {
     fetchEmails(false);
+  }, [fetchEmails]);
 
-    // 20-second background sync interval
-    const interval = setInterval(async () => {
+  // Steady 30s background sync interval (never restarts on filter changes, prevents freezing)
+  useEffect(() => {
+    const runBackgroundSync = async () => {
+      if (isSyncRunningRef.current) return;
+      isSyncRunningRef.current = true;
       try {
-        await fetch('/api/sync/all');
+        await fetch('/api/sync/all', { signal: AbortSignal.timeout(15000) });
       } catch {}
-      await fetchEmails(true);
-    }, 20000);
+      finally {
+        isSyncRunningRef.current = false;
+        fetchEmails(true);
+      }
+    };
 
-    // Tab focus listener for instant updates
-    const handleFocus = async () => {
-      try {
-        await fetch('/api/sync/all');
-      } catch {}
-      await fetchEmails(true);
+    const interval = setInterval(runBackgroundSync, 30000);
+
+    // Lightweight focus listener: ONLY refresh local emails from DB, do NOT trigger heavy IMAP sync on focus!
+    const handleFocus = () => {
+      fetchEmails(true);
     };
 
     window.addEventListener('focus', handleFocus);
@@ -286,7 +320,7 @@ export default function App() {
       clearInterval(interval);
       window.removeEventListener('focus', handleFocus);
     };
-  }, [fetchAccounts, fetchEmails]);
+  }, [fetchEmails]);
 
   // Handle seed action
   const handleSeedData = async () => {
@@ -532,6 +566,8 @@ export default function App() {
         onRequestNotificationPermission={handleToggleOrRequestNotifications}
         onLogout={handleLogout}
         onOpenProfileModal={() => setIsProfileModalOpen(true)}
+        currentTheme={currentTheme}
+        onOpenThemeModal={() => setIsThemeModalOpen(true)}
       />
 
       {/* Jarvis Urgent Alert Banner */}
@@ -620,6 +656,8 @@ export default function App() {
           onSelectView={setCurrentView}
           onLogout={handleLogout}
           onOpenProfileModal={() => setIsProfileModalOpen(true)}
+          currentTheme={currentTheme}
+          onOpenThemeModal={() => setIsThemeModalOpen(true)}
         />
 
         {currentView === 'developer' ? (
@@ -734,6 +772,14 @@ export default function App() {
             localStorage.setItem('aethermail_user', JSON.stringify(next));
           }
         }}
+      />
+
+      {/* Theme Manager Modal */}
+      <ThemeManagerModal
+        isOpen={isThemeModalOpen}
+        onClose={() => setIsThemeModalOpen(false)}
+        currentTheme={currentTheme}
+        onSelectTheme={(newTheme) => setCurrentTheme(newTheme)}
       />
     </div>
   );
