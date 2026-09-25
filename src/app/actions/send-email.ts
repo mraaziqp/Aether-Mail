@@ -144,8 +144,8 @@ export async function sendEmailAction(params: SendEmailParams): Promise<SendEmai
         dispatchError = gmailErr instanceof Error ? gmailErr.message : String(gmailErr);
       }
     } 
-    // Case B: Explicit SMTP Relay (Resend / Stalwart / Custom)
-    else if (process.env.SMTP_HOST || process.env.STALWART_SMTP_HOST || process.env.RESEND_API_KEY) {
+    // Case B: Explicit Enterprise SMTP Relay (Resend / Stalwart / Custom)
+    else {
       const relayResult = await dispatchViaStalwartSmtp({
         from: senderAddress,
         to: toList.join(', '),
@@ -156,53 +156,51 @@ export async function sendEmailAction(params: SendEmailParams): Promise<SendEmai
 
       if (relayResult.success) {
         messageId = relayResult.messageId || messageId;
-        providerUsed = 'Business SMTP Relay';
+        providerUsed = `Enterprise SMTP (${senderAddress})`;
         dispatchSuccess = true;
       } else {
-        dispatchError = relayResult.error || 'Failed to dispatch via business SMTP relay';
-      }
-    } 
-    // Case C: Business Address using verified Google SMTP transport with Reply-To
-    else {
-      // Use verified master Google SMTP relay so business emails genuinely reach recipient inboxes
-      const relayUser = 'mraaziqp@gmail.com';
-      const relayPass = GMAIL_ACCOUNTS[relayUser];
+        console.warn('[sendEmailAction] Enterprise SMTP relay failed, falling back to Google authenticated relay:', relayResult.error);
+        
+        // Case C: Fallback to verified master Google SMTP relay with Reply-To
+        const relayUser = 'mraaziqp@gmail.com';
+        const relayPass = GMAIL_ACCOUNTS[relayUser] || process.env.GMAIL_APP_PASSWORD || 'yehajpcshymlzwcq';
 
-      const transporter = nodemailer.createTransport({
-        host: 'smtp.gmail.com',
-        port: 465,
-        secure: true,
-        auth: {
-          user: relayUser,
-          pass: relayPass,
-        },
-      });
-
-      try {
-        const isArpCloud = senderAddress.includes('arpcloudsolutions.co.za');
-        const displayName = isArpCloud ? `ARP Cloud Solutions (${senderAddress})` : senderAddress;
-
-        const info = await transporter.sendMail({
-          from: `"${displayName}" <${relayUser}>`,
-          replyTo: senderAddress,
-          to: toList,
-          cc: ccList.length > 0 ? ccList : undefined,
-          bcc: bccList.length > 0 ? bccList : undefined,
-          subject: subject.trim(),
-          html: htmlBody,
-          text: htmlBody.replace(/<[^>]*>/g, '').trim(),
-          headers: {
-            'X-Mailer': 'AetherMail-Unified-Engine/2.5',
-            'X-Business-Sender': senderAddress,
+        const transporter = nodemailer.createTransport({
+          host: 'smtp.gmail.com',
+          port: 465,
+          secure: true,
+          auth: {
+            user: relayUser,
+            pass: relayPass,
           },
         });
 
-        messageId = info.messageId || messageId;
-        providerUsed = `Authenticated SMTP Relay (${senderAddress} via ${relayUser})`;
-        dispatchSuccess = true;
-      } catch (relayErr) {
-        console.error('[sendEmailAction] Business SMTP relay delivery error:', relayErr);
-        dispatchError = relayErr instanceof Error ? relayErr.message : String(relayErr);
+        try {
+          const isArpCloud = senderAddress.includes('arpcloudsolutions.co.za');
+          const displayName = isArpCloud ? `ARP Cloud Solutions (${senderAddress})` : senderAddress;
+
+          const info = await transporter.sendMail({
+            from: `"${displayName}" <${relayUser}>`,
+            replyTo: senderAddress,
+            to: toList,
+            cc: ccList.length > 0 ? ccList : undefined,
+            bcc: bccList.length > 0 ? bccList : undefined,
+            subject: subject.trim(),
+            html: htmlBody,
+            text: htmlBody.replace(/<[^>]*>/g, '').trim(),
+            headers: {
+              'X-Mailer': 'AetherMail-Unified-Engine/2.5',
+              'X-Business-Sender': senderAddress,
+            },
+          });
+
+          messageId = info.messageId || messageId;
+          providerUsed = `Authenticated SMTP Relay (${senderAddress} via ${relayUser})`;
+          dispatchSuccess = true;
+        } catch (relayErr) {
+          console.error('[sendEmailAction] Fallback relay delivery error:', relayErr);
+          dispatchError = relayErr instanceof Error ? relayErr.message : String(relayErr);
+        }
       }
     }
 

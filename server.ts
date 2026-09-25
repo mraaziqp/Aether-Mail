@@ -340,10 +340,11 @@ export async function createApp() {
         let appPass = '';
         if (acc.oauth_tokens && typeof acc.oauth_tokens === 'object' && 'app_password' in acc.oauth_tokens) {
           appPass = String((acc.oauth_tokens as any).app_password);
-        } else if (acc.email_address === process.env.GMAIL_USER) {
-          appPass = process.env.GMAIL_APP_PASSWORD || '';
-        } else if (acc.email_address === process.env.BACKUPE9_USER) {
-          appPass = process.env.BACKUPE9_APP_PASSWORD || '';
+        }
+        if (!appPass && (acc.email_address === process.env.GMAIL_USER || acc.email_address === 'mraaziqp@gmail.com')) {
+          appPass = process.env.GMAIL_APP_PASSWORD || 'yehajpcshymlzwcq';
+        } else if (!appPass && (acc.email_address === process.env.BACKUPE9_USER || acc.email_address === 'backupe9@gmail.com')) {
+          appPass = process.env.BACKUPE9_APP_PASSWORD || 'scpjnpbgzbilrttj';
         }
 
         if (appPass && acc.email_address.includes('@gmail.com')) {

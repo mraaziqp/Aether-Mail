@@ -213,110 +213,119 @@ async function syncGmailAccount(emailAddress, appPassword, limit = 20) {
         created_at: /* @__PURE__ */ new Date()
       });
     }
-    const lock = await client.getMailboxLock("INBOX");
     let imported = 0;
-    try {
-      const status = await client.status("INBOX", { messages: true });
-      const totalMessages = status.messages || 0;
-      if (totalMessages > 0) {
-        const startSeq = Math.max(1, totalMessages - limit + 1);
-        const seqRange = `${startSeq}:${totalMessages}`;
-        for await (const message of client.fetch(seqRange, { source: true, envelope: true })) {
-          if (!message.source) continue;
-          try {
-            const parsed = await simpleParser(message.source);
-            const msgId = parsed.messageId || `imap_${message.uid}_${Date.now()}`;
-            const [existingEmail] = await db.select({ id: emails.id }).from(emails).where(eq5(emails.id, msgId)).limit(1);
-            if (existingEmail) {
-              continue;
-            }
-            const subject = parsed.subject || "(No Subject)";
-            const sender = parsed.from?.text || cleanEmail;
-            const toText = parsed.to ? Array.isArray(parsed.to) ? parsed.to.map((t) => t.text).join(" ") : parsed.to.text : "";
-            const deliveredTo = parsed.headers?.get("delivered-to") || "";
-            const fullBody = parsed.html || parsed.text || "";
-            const snippet = (parsed.text || fullBody.replace(/<[^>]*>/g, "")).slice(0, 140).trim();
-            const receivedAt = parsed.date || /* @__PURE__ */ new Date();
-            const lowerSub = subject.toLowerCase();
-            const lowerBody = fullBody.toLowerCase();
-            const lowerRecipients = `${toText} ${deliveredTo} ${snippet}`.toLowerCase();
-            let targetAccountId = accountId;
-            if (lowerRecipients.includes("info@arpcloudsolutions.co.za") || lowerSub.includes("payfast") || lowerBody.includes("payfast")) {
-              const [bizAcc] = await db.select().from(accounts).where(eq5(accounts.email_address, "info@arpcloudsolutions.co.za")).limit(1);
-              if (bizAcc) {
-                targetAccountId = bizAcc.id;
+    const foldersToSync = ["INBOX", "[Gmail]/Spam"];
+    for (const folderName of foldersToSync) {
+      let lock;
+      try {
+        lock = await client.getMailboxLock(folderName);
+      } catch {
+        continue;
+      }
+      try {
+        const status = await client.status(folderName, { messages: true });
+        const totalMessages = status.messages || 0;
+        if (totalMessages > 0) {
+          const fetchLimit = folderName === "INBOX" ? limit : Math.min(10, limit);
+          const startSeq = Math.max(1, totalMessages - fetchLimit + 1);
+          const seqRange = `${startSeq}:${totalMessages}`;
+          for await (const message of client.fetch(seqRange, { source: true, envelope: true })) {
+            if (!message.source) continue;
+            try {
+              const parsed = await simpleParser(message.source);
+              const msgId = parsed.messageId || `imap_${message.uid}_${Date.now()}`;
+              const [existingEmail] = await db.select({ id: emails.id }).from(emails).where(eq5(emails.id, msgId)).limit(1);
+              if (existingEmail) {
+                continue;
               }
-            } else if (lowerRecipients.includes("contact@arpcloudsolutions.co.za")) {
-              const [bizAcc] = await db.select().from(accounts).where(eq5(accounts.email_address, "contact@arpcloudsolutions.co.za")).limit(1);
-              if (bizAcc) {
-                targetAccountId = bizAcc.id;
+              const subject = parsed.subject || "(No Subject)";
+              const sender = parsed.from?.text || cleanEmail;
+              const toText = parsed.to ? Array.isArray(parsed.to) ? parsed.to.map((t) => t.text).join(" ") : parsed.to.text : "";
+              const deliveredTo = parsed.headers?.get("delivered-to") || "";
+              const fullBody = parsed.html || parsed.text || "";
+              const snippet = (parsed.text || fullBody.replace(/<[^>]*>/g, "")).slice(0, 140).trim();
+              const receivedAt = parsed.date || /* @__PURE__ */ new Date();
+              const lowerSub = subject.toLowerCase();
+              const lowerBody = fullBody.toLowerCase();
+              const lowerRecipients = `${toText} ${deliveredTo} ${snippet}`.toLowerCase();
+              let targetAccountId = accountId;
+              if (lowerRecipients.includes("info@arpcloudsolutions.co.za") || lowerSub.includes("payfast") || lowerBody.includes("payfast")) {
+                const [bizAcc] = await db.select().from(accounts).where(eq5(accounts.email_address, "info@arpcloudsolutions.co.za")).limit(1);
+                if (bizAcc) {
+                  targetAccountId = bizAcc.id;
+                }
+              } else if (lowerRecipients.includes("contact@arpcloudsolutions.co.za")) {
+                const [bizAcc] = await db.select().from(accounts).where(eq5(accounts.email_address, "contact@arpcloudsolutions.co.za")).limit(1);
+                if (bizAcc) {
+                  targetAccountId = bizAcc.id;
+                }
               }
-            }
-            let cat = "personal";
-            let requiresAlert = false;
-            if (lowerSub.includes("alert") || lowerSub.includes("urgent") || lowerSub.includes("action required") || lowerSub.includes("security")) {
-              cat = "urgent";
-              requiresAlert = true;
-            } else if (lowerSub.includes("invoice") || lowerSub.includes("payment") || lowerSub.includes("payfast") || lowerSub.includes("receipt") || lowerSub.includes("bank") || lowerSub.includes("statement")) {
-              cat = "financial";
-              requiresAlert = lowerSub.includes("payfast") || lowerSub.includes("action") || lowerSub.includes("verify");
-            } else if (lowerSub.includes("unsubscribe") || lowerBody.includes("unsubscribe") || lowerSub.includes("newsletter") || lowerSub.includes("digest")) {
-              cat = "newsletter";
-            } else if (lowerSub.includes("noreply") || lowerSub.includes("no-reply") || sender.includes("no-reply") || sender.includes("noreply")) {
-              cat = "automated";
-            } else if (lowerSub.includes("job") || lowerSub.includes("project") || lowerSub.includes("meeting") || lowerSub.includes("client") || lowerSub.includes("solutions")) {
-              cat = "work";
-            }
-            if (lowerSub.includes("payfast") || lowerBody.includes("payfast")) {
-              cat = "financial";
-              requiresAlert = true;
-            }
-            const newEmail = {
-              id: msgId,
-              account_id: targetAccountId,
-              thread_id: `thread_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-              subject,
-              sender,
-              body_snippet: snippet,
-              full_body: fullBody,
-              category: cat,
-              ai_summary: snippet.slice(0, 120) || `Message from ${sender}: ${subject}`,
-              requires_alert: requiresAlert,
-              is_read: false,
-              received_at: receivedAt
-            };
-            await db.insert(emails).values(newEmail).onConflictDoNothing();
-            imported++;
-            if (requiresAlert) {
-              const ntfyTopic = process.env.NTFY_TOPIC || "aethermail-alerts";
-              try {
-                await fetch(`https://ntfy.sh/${ntfyTopic}`, {
-                  method: "POST",
-                  headers: {
-                    Title: `\u{1F6A8} [Jarvis Alert] ${subject.slice(0, 60)}`,
-                    Priority: "urgent",
-                    Tags: "rotating_light,envelope,warning",
-                    Click: "https://aethermail-five.vercel.app"
-                  },
-                  body: `Account: ${cleanEmail}
+              let cat = "personal";
+              let requiresAlert = false;
+              if (lowerSub.includes("alert") || lowerSub.includes("urgent") || lowerSub.includes("action required") || lowerSub.includes("security")) {
+                cat = "urgent";
+                requiresAlert = true;
+              } else if (lowerSub.includes("invoice") || lowerSub.includes("payment") || lowerSub.includes("payfast") || lowerSub.includes("receipt") || lowerSub.includes("bank") || lowerSub.includes("statement")) {
+                cat = "financial";
+                requiresAlert = lowerSub.includes("payfast") || lowerSub.includes("action") || lowerSub.includes("verify");
+              } else if (lowerSub.includes("unsubscribe") || lowerBody.includes("unsubscribe") || lowerSub.includes("newsletter") || lowerSub.includes("digest")) {
+                cat = "newsletter";
+              } else if (lowerSub.includes("noreply") || lowerSub.includes("no-reply") || sender.includes("no-reply") || sender.includes("noreply")) {
+                cat = "automated";
+              } else if (lowerSub.includes("job") || lowerSub.includes("project") || lowerSub.includes("meeting") || lowerSub.includes("client") || lowerSub.includes("solutions")) {
+                cat = "work";
+              }
+              if (lowerSub.includes("payfast") || lowerBody.includes("payfast")) {
+                cat = "financial";
+                requiresAlert = true;
+              }
+              const newEmail = {
+                id: msgId,
+                account_id: targetAccountId,
+                thread_id: `thread_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+                subject,
+                sender,
+                body_snippet: snippet,
+                full_body: fullBody,
+                category: cat,
+                ai_summary: snippet.slice(0, 120) || `Message from ${sender}: ${subject}`,
+                requires_alert: requiresAlert,
+                is_read: false,
+                received_at: receivedAt
+              };
+              await db.insert(emails).values(newEmail).onConflictDoNothing();
+              imported++;
+              if (requiresAlert) {
+                const ntfyTopic = process.env.NTFY_TOPIC || "aethermail-alerts";
+                try {
+                  await fetch(`https://ntfy.sh/${ntfyTopic}`, {
+                    method: "POST",
+                    headers: {
+                      Title: `\u{1F6A8} [Jarvis Alert] ${subject.slice(0, 60)}`,
+                      Priority: "urgent",
+                      Tags: "rotating_light,envelope,warning",
+                      Click: "https://aethermail-five.vercel.app"
+                    },
+                    body: `Account: ${cleanEmail}
 From: ${sender}
 
 Subject: ${subject}
 
 Summary: ${snippet.slice(0, 150)}`,
-                  signal: AbortSignal.timeout(3e3)
-                });
-              } catch (pushErr) {
-                console.warn("[ntfy.sh] Push alert error in IMAP sync:", pushErr);
+                    signal: AbortSignal.timeout(3e3)
+                  });
+                } catch (pushErr) {
+                  console.warn("[ntfy.sh] Push alert error in IMAP sync:", pushErr);
+                }
               }
+            } catch (msgErr) {
+              console.warn("[IMAP Sync] Error parsing message:", msgErr);
             }
-          } catch (msgErr) {
-            console.warn("[IMAP Sync] Error parsing message:", msgErr);
           }
         }
+      } finally {
+        lock.release();
       }
-    } finally {
-      lock.release();
     }
     return { success: true, imported };
   } catch (err) {
@@ -530,16 +539,16 @@ import { eq } from "drizzle-orm";
 // src/lib/stalwart.ts
 import nodemailer from "nodemailer";
 function getStalwartConfig() {
+  const resendApiKey = process.env.RESEND_API_KEY || process.env.SMTP_PASS || "";
+  const explicitHost = process.env.SMTP_HOST || process.env.STALWART_SMTP_HOST;
   return {
     apiUrl: process.env.STALWART_API_URL || "http://localhost:8080",
     adminUser: process.env.STALWART_ADMIN_USER || "admin",
-    // No default. A placeholder secret that works in dev silently becomes the
-    // production secret the day someone forgets to set it.
     adminSecret: process.env.STALWART_ADMIN_SECRET ?? "",
-    smtpHost: process.env.SMTP_HOST || process.env.STALWART_SMTP_HOST || "localhost",
-    smtpPort: Number(process.env.SMTP_PORT || process.env.STALWART_SMTP_PORT) || 587,
-    smtpUser: process.env.SMTP_USER ?? "",
-    smtpPass: process.env.SMTP_PASS ?? ""
+    smtpHost: explicitHost || "smtp.resend.com",
+    smtpPort: Number(process.env.SMTP_PORT) || 465,
+    smtpUser: process.env.SMTP_USER || "resend",
+    smtpPass: process.env.SMTP_PASS || resendApiKey
   };
 }
 async function provisionStalwartDomain(domainName) {
@@ -625,15 +634,16 @@ async function dispatchViaStalwartSmtp(params) {
       rejectUnauthorized: !isLocal
     }
   });
+  const fromDisplay = params.from.includes("<") ? params.from : `"ARP Cloud Solutions" <${params.from}>`;
   const mailOptions = {
-    from: params.from,
+    from: fromDisplay,
     to: params.to,
     subject: params.subject,
     html: params.htmlBody,
     text: params.textBody || params.htmlBody.replace(/<[^>]*>/g, ""),
-    replyTo: params.replyTo,
+    replyTo: params.replyTo || params.from,
     headers: {
-      "X-Mailer": "AetherMail-Stalwart-Engine/2.0",
+      "X-Mailer": "AetherMail-Enterprise-Engine/2.5",
       "X-Agent-Protocol": "Jarvis-Autonomous-Dispatch"
     }
   };
@@ -736,7 +746,7 @@ async function sendEmailAction(params) {
         console.error("[sendEmailAction] Gmail SMTP delivery error:", gmailErr);
         dispatchError = gmailErr instanceof Error ? gmailErr.message : String(gmailErr);
       }
-    } else if (process.env.SMTP_HOST || process.env.STALWART_SMTP_HOST || process.env.RESEND_API_KEY) {
+    } else {
       const relayResult = await dispatchViaStalwartSmtp({
         from: senderAddress,
         to: toList.join(", "),
@@ -746,46 +756,45 @@ async function sendEmailAction(params) {
       });
       if (relayResult.success) {
         messageId = relayResult.messageId || messageId;
-        providerUsed = "Business SMTP Relay";
+        providerUsed = `Enterprise SMTP (${senderAddress})`;
         dispatchSuccess = true;
       } else {
-        dispatchError = relayResult.error || "Failed to dispatch via business SMTP relay";
-      }
-    } else {
-      const relayUser = "mraaziqp@gmail.com";
-      const relayPass = GMAIL_ACCOUNTS[relayUser];
-      const transporter = nodemailer2.createTransport({
-        host: "smtp.gmail.com",
-        port: 465,
-        secure: true,
-        auth: {
-          user: relayUser,
-          pass: relayPass
-        }
-      });
-      try {
-        const isArpCloud = senderAddress.includes("arpcloudsolutions.co.za");
-        const displayName = isArpCloud ? `ARP Cloud Solutions (${senderAddress})` : senderAddress;
-        const info = await transporter.sendMail({
-          from: `"${displayName}" <${relayUser}>`,
-          replyTo: senderAddress,
-          to: toList,
-          cc: ccList.length > 0 ? ccList : void 0,
-          bcc: bccList.length > 0 ? bccList : void 0,
-          subject: subject.trim(),
-          html: htmlBody,
-          text: htmlBody.replace(/<[^>]*>/g, "").trim(),
-          headers: {
-            "X-Mailer": "AetherMail-Unified-Engine/2.5",
-            "X-Business-Sender": senderAddress
+        console.warn("[sendEmailAction] Enterprise SMTP relay failed, falling back to Google authenticated relay:", relayResult.error);
+        const relayUser = "mraaziqp@gmail.com";
+        const relayPass = GMAIL_ACCOUNTS[relayUser] || process.env.GMAIL_APP_PASSWORD || "yehajpcshymlzwcq";
+        const transporter = nodemailer2.createTransport({
+          host: "smtp.gmail.com",
+          port: 465,
+          secure: true,
+          auth: {
+            user: relayUser,
+            pass: relayPass
           }
         });
-        messageId = info.messageId || messageId;
-        providerUsed = `Authenticated SMTP Relay (${senderAddress} via ${relayUser})`;
-        dispatchSuccess = true;
-      } catch (relayErr) {
-        console.error("[sendEmailAction] Business SMTP relay delivery error:", relayErr);
-        dispatchError = relayErr instanceof Error ? relayErr.message : String(relayErr);
+        try {
+          const isArpCloud = senderAddress.includes("arpcloudsolutions.co.za");
+          const displayName = isArpCloud ? `ARP Cloud Solutions (${senderAddress})` : senderAddress;
+          const info = await transporter.sendMail({
+            from: `"${displayName}" <${relayUser}>`,
+            replyTo: senderAddress,
+            to: toList,
+            cc: ccList.length > 0 ? ccList : void 0,
+            bcc: bccList.length > 0 ? bccList : void 0,
+            subject: subject.trim(),
+            html: htmlBody,
+            text: htmlBody.replace(/<[^>]*>/g, "").trim(),
+            headers: {
+              "X-Mailer": "AetherMail-Unified-Engine/2.5",
+              "X-Business-Sender": senderAddress
+            }
+          });
+          messageId = info.messageId || messageId;
+          providerUsed = `Authenticated SMTP Relay (${senderAddress} via ${relayUser})`;
+          dispatchSuccess = true;
+        } catch (relayErr) {
+          console.error("[sendEmailAction] Fallback relay delivery error:", relayErr);
+          dispatchError = relayErr instanceof Error ? relayErr.message : String(relayErr);
+        }
       }
     }
     if (!dispatchSuccess && dispatchError) {
@@ -2352,10 +2361,11 @@ Action Required: Immediate human attention flagged by Gemini 2.5 Flash.`;
         let appPass = "";
         if (acc.oauth_tokens && typeof acc.oauth_tokens === "object" && "app_password" in acc.oauth_tokens) {
           appPass = String(acc.oauth_tokens.app_password);
-        } else if (acc.email_address === process.env.GMAIL_USER) {
-          appPass = process.env.GMAIL_APP_PASSWORD || "";
-        } else if (acc.email_address === process.env.BACKUPE9_USER) {
-          appPass = process.env.BACKUPE9_APP_PASSWORD || "";
+        }
+        if (!appPass && (acc.email_address === process.env.GMAIL_USER || acc.email_address === "mraaziqp@gmail.com")) {
+          appPass = process.env.GMAIL_APP_PASSWORD || "yehajpcshymlzwcq";
+        } else if (!appPass && (acc.email_address === process.env.BACKUPE9_USER || acc.email_address === "backupe9@gmail.com")) {
+          appPass = process.env.BACKUPE9_APP_PASSWORD || "scpjnpbgzbilrttj";
         }
         if (appPass && acc.email_address.includes("@gmail.com")) {
           try {

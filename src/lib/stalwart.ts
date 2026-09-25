@@ -12,16 +12,17 @@ export interface StalwartConfig {
 }
 
 export function getStalwartConfig(): StalwartConfig {
+  const resendApiKey = process.env.RESEND_API_KEY || process.env.SMTP_PASS || '';
+  const explicitHost = process.env.SMTP_HOST || process.env.STALWART_SMTP_HOST;
+
   return {
     apiUrl: process.env.STALWART_API_URL || 'http://localhost:8080',
     adminUser: process.env.STALWART_ADMIN_USER || 'admin',
-    // No default. A placeholder secret that works in dev silently becomes the
-    // production secret the day someone forgets to set it.
     adminSecret: process.env.STALWART_ADMIN_SECRET ?? '',
-    smtpHost: process.env.SMTP_HOST || process.env.STALWART_SMTP_HOST || 'localhost',
-    smtpPort: Number(process.env.SMTP_PORT || process.env.STALWART_SMTP_PORT) || 587,
-    smtpUser: process.env.SMTP_USER ?? '',
-    smtpPass: process.env.SMTP_PASS ?? '',
+    smtpHost: explicitHost || 'smtp.resend.com',
+    smtpPort: Number(process.env.SMTP_PORT) || 465,
+    smtpUser: process.env.SMTP_USER || 'resend',
+    smtpPass: process.env.SMTP_PASS || resendApiKey,
   };
 }
 
@@ -142,15 +143,19 @@ export async function dispatchViaStalwartSmtp(params: {
     },
   });
 
+  const fromDisplay = params.from.includes('<')
+    ? params.from
+    : `"ARP Cloud Solutions" <${params.from}>`;
+
   const mailOptions = {
-    from: params.from,
+    from: fromDisplay,
     to: params.to,
     subject: params.subject,
     html: params.htmlBody,
     text: params.textBody || params.htmlBody.replace(/<[^>]*>/g, ''),
-    replyTo: params.replyTo,
+    replyTo: params.replyTo || params.from,
     headers: {
-      'X-Mailer': 'AetherMail-Stalwart-Engine/2.0',
+      'X-Mailer': 'AetherMail-Enterprise-Engine/2.5',
       'X-Agent-Protocol': 'Jarvis-Autonomous-Dispatch',
     },
   };

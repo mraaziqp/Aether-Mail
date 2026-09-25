@@ -58,24 +58,33 @@ export async function syncGmailAccount(
       });
     }
 
-    const lock = await client.getMailboxLock('INBOX');
     let imported = 0;
+    const foldersToSync = ['INBOX', '[Gmail]/Spam'];
 
-    try {
-      // Find the range of the last N messages
-      const status = await client.status('INBOX', { messages: true });
-      const totalMessages = status.messages || 0;
+    for (const folderName of foldersToSync) {
+      let lock;
+      try {
+        lock = await client.getMailboxLock(folderName);
+      } catch {
+        continue;
+      }
 
-      if (totalMessages > 0) {
-        const startSeq = Math.max(1, totalMessages - limit + 1);
-        const seqRange = `${startSeq}:${totalMessages}`;
+      try {
+        // Find the range of the last N messages
+        const status = await client.status(folderName, { messages: true });
+        const totalMessages = status.messages || 0;
 
-        for await (const message of client.fetch(seqRange, { source: true, envelope: true })) {
-          if (!message.source) continue;
+        if (totalMessages > 0) {
+          const fetchLimit = folderName === 'INBOX' ? limit : Math.min(10, limit);
+          const startSeq = Math.max(1, totalMessages - fetchLimit + 1);
+          const seqRange = `${startSeq}:${totalMessages}`;
 
-          try {
-            const parsed = await simpleParser(message.source);
-            const msgId = parsed.messageId || `imap_${message.uid}_${Date.now()}`;
+          for await (const message of client.fetch(seqRange, { source: true, envelope: true })) {
+            if (!message.source) continue;
+
+            try {
+              const parsed = await simpleParser(message.source);
+              const msgId = parsed.messageId || `imap_${message.uid}_${Date.now()}`;
 
             // Check if already imported
             const [existingEmail] = await db
@@ -192,8 +201,9 @@ export async function syncGmailAccount(
           }
         }
       }
-    } finally {
-      lock.release();
+      } finally {
+        lock.release();
+      }
     }
 
     return { success: true, imported };
