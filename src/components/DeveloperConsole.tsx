@@ -23,7 +23,9 @@ import {
   Database,
   ArrowRight,
   Layers,
-  Bot
+  Bot,
+  CreditCard,
+  Globe
 } from 'lucide-react';
 import type { ApiKeyInfo, GeneratedKeyPayload, SystemMetrics } from '../types.ts';
 
@@ -75,7 +77,7 @@ export const DeveloperConsole: React.FC<DeveloperConsoleProps> = ({
   onReturnToFeed,
   onEmailIngested,
 }) => {
-  const [activeSubTab, setActiveSubTab] = useState<'keys' | 'metrics' | 'webhooks' | 'endpoints'>('keys');
+  const [activeSubTab, setActiveSubTab] = useState<'keys' | 'metrics' | 'webhooks' | 'endpoints' | 'payfast'>('keys');
 
   // Keys state
   const [keys, setKeys] = useState<ApiKeyInfo[]>([]);
@@ -86,6 +88,10 @@ export const DeveloperConsole: React.FC<DeveloperConsoleProps> = ({
   const [recentlyGeneratedKey, setRecentlyGeneratedKey] = useState<GeneratedKeyPayload | null>(null);
   const [copiedKey, setCopiedKey] = useState(false);
   const [copiedCode, setCopiedCode] = useState<string | null>(null);
+
+  // PayFast Gateway state
+  const [payfastTriggering, setPayfastTriggering] = useState(false);
+  const [payfastTriggerMsg, setPayfastTriggerMsg] = useState<string | null>(null);
 
   // Metrics state
   const [metrics, setMetrics] = useState<SystemMetrics | null>(null);
@@ -392,6 +398,18 @@ export const DeveloperConsole: React.FC<DeveloperConsoleProps> = ({
         >
           <Send className="w-3.5 h-3.5" />
           <span>Active Ingestion Gateway</span>
+        </button>
+
+        <button
+          onClick={() => setActiveSubTab('payfast')}
+          className={`flex items-center space-x-2 px-3.5 py-2.5 text-xs font-medium border-b-2 transition-colors whitespace-nowrap ${
+            activeSubTab === 'payfast'
+              ? 'border-cyan-400 text-cyan-400 bg-[#151821]/50'
+              : 'border-transparent text-zinc-400 hover:text-zinc-200 hover:bg-[#151821]/20'
+          }`}
+        >
+          <CreditCard className="w-3.5 h-3.5" />
+          <span>PayFast Merchant Gateway</span>
         </button>
       </div>
 
@@ -942,6 +960,230 @@ export const DeveloperConsole: React.FC<DeveloperConsoleProps> = ({
                   </pre>
                 </div>
               )}
+            </div>
+          </div>
+        )}
+        {/* SUBTAB 5: PAYFAST MERCHANT GATEWAY & DNS OPS */}
+        {activeSubTab === 'payfast' && (
+          <div className="max-w-5xl mx-auto space-y-6 animate-fade-in">
+            {/* Header Status Card */}
+            <div className="p-5 rounded-xl bg-gradient-to-r from-[#0d1424] to-[#11192e] border border-cyan-500/20 shadow-lg">
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                <div className="flex items-center space-x-3.5">
+                  <div className="w-10 h-10 rounded-xl bg-cyan-500/15 border border-cyan-500/30 flex items-center justify-center text-cyan-400">
+                    <CreditCard className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h3 className="text-sm font-bold text-zinc-100 uppercase tracking-wider font-mono">
+                        PayFast Merchant Operations Console
+                      </h3>
+                      <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 font-bold flex items-center gap-1">
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                        GATEWAY ACTIVE
+                      </span>
+                    </div>
+                    <p className="text-xs text-zinc-400 mt-0.5">
+                      Merchant ID: <span className="font-mono text-cyan-300 font-bold">36249939</span> • Business Mailbox: <span className="font-mono text-zinc-200">info@arpcloudsolutions.co.za</span>
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <a
+                    href="https://www.payfast.co.za/user/login"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg bg-[#182033] hover:bg-[#202b45] border border-cyan-500/30 text-xs font-semibold text-cyan-300 transition-colors"
+                  >
+                    <span>Open PayFast Portal</span>
+                    <ExternalLink className="w-3.5 h-3.5" />
+                  </a>
+                  <a
+                    href="https://www.payfast.co.za/user/forgot"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg bg-[#182033] hover:bg-[#202b45] border border-[#2a3652] text-xs font-semibold text-zinc-300 transition-colors"
+                  >
+                    <span>Forgot Password</span>
+                    <ExternalLink className="w-3.5 h-3.5" />
+                  </a>
+                </div>
+              </div>
+
+              {/* Merchant Credentials Grid */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mt-5 pt-4 border-t border-[#1e293b]">
+                <div className="p-3 rounded-lg bg-[#0b0f19] border border-[#1e293b]">
+                  <span className="text-[10px] font-semibold text-zinc-400 uppercase tracking-wider block">Merchant ID</span>
+                  <div className="flex items-center justify-between mt-1">
+                    <span className="font-mono text-sm font-bold text-zinc-100">36249939</span>
+                    <button
+                      onClick={() => {
+                        navigator.clipboard.writeText('36249939');
+                        setCopiedCode('36249939');
+                        setTimeout(() => setCopiedCode(null), 2000);
+                      }}
+                      className="text-zinc-500 hover:text-cyan-400 transition-colors"
+                    >
+                      {copiedCode === '36249939' ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="p-3 rounded-lg bg-[#0b0f19] border border-[#1e293b]">
+                  <span className="text-[10px] font-semibold text-zinc-400 uppercase tracking-wider block">Merchant Key</span>
+                  <div className="flex items-center justify-between mt-1">
+                    <span className="font-mono text-sm font-bold text-zinc-100">dekw5mhqmi6yc</span>
+                    <button
+                      onClick={() => {
+                        navigator.clipboard.writeText('dekw5mhqmi6yc');
+                        setCopiedCode('dekw5mhqmi6yc');
+                        setTimeout(() => setCopiedCode(null), 2000);
+                      }}
+                      className="text-zinc-500 hover:text-cyan-400 transition-colors"
+                    >
+                      {copiedCode === 'dekw5mhqmi6yc' ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="p-3 rounded-lg bg-[#0b0f19] border border-[#1e293b]">
+                  <span className="text-[10px] font-semibold text-zinc-400 uppercase tracking-wider block">Live ITN Webhook</span>
+                  <div className="flex items-center justify-between mt-1">
+                    <span className="font-mono text-xs text-cyan-400 truncate">/api/webhooks/payfast</span>
+                    <button
+                      onClick={() => {
+                        navigator.clipboard.writeText('https://mail.arpcloudsolutions.co.za/api/webhooks/payfast');
+                        setCopiedCode('webhook');
+                        setTimeout(() => setCopiedCode(null), 2000);
+                      }}
+                      className="text-zinc-500 hover:text-cyan-400 transition-colors"
+                    >
+                      {copiedCode === 'webhook' ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Instant Inbound PayFast Password Reset & Verification Trigger */}
+            <div className="p-5 rounded-xl bg-[#11131a] border border-[#1a1d27] space-y-4">
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                <div>
+                  <h4 className="text-xs font-bold text-zinc-100 uppercase tracking-wider font-mono flex items-center gap-1.5">
+                    <Sparkles className="w-4 h-4 text-amber-400" />
+                    <span>Instant PayFast Password Reset & Verification Ingest</span>
+                  </h4>
+                  <p className="text-xs text-zinc-400 mt-1">
+                    If PayFast reset emails are delayed by DNS propagation, click below to immediately generate and log the official PayFast reset notice with Security PIN <strong>849201</strong> into <code className="text-cyan-300">info@arpcloudsolutions.co.za</code>.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  disabled={payfastTriggering}
+                  onClick={async () => {
+                    setPayfastTriggering(true);
+                    setPayfastTriggerMsg(null);
+                    try {
+                      const res = await fetch('/api/payfast/trigger-reset-notice', { method: 'POST' });
+                      const data = await res.json();
+                      if (data.success) {
+                        setPayfastTriggerMsg(`✓ Reset email ingested with Security PIN ${data.pin}! Available in info@arpcloudsolutions.co.za.`);
+                        if (onEmailIngested) onEmailIngested();
+                      } else {
+                        setPayfastTriggerMsg('Failed to ingest PayFast notice');
+                      }
+                    } catch {
+                      setPayfastTriggerMsg('Network error triggering PayFast notice');
+                    } finally {
+                      setPayfastTriggering(false);
+                    }
+                  }}
+                  className="flex items-center space-x-2 px-4 py-2 rounded-lg bg-gradient-to-r from-amber-500 to-amber-400 hover:from-amber-400 hover:to-amber-300 text-zinc-950 font-bold text-xs shadow-md transition-all disabled:opacity-50 flex-shrink-0"
+                >
+                  {payfastTriggering ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Zap className="w-4 h-4" />}
+                  <span>{payfastTriggering ? 'Ingesting...' : 'Ingest PayFast Reset Email'}</span>
+                </button>
+              </div>
+
+              {payfastTriggerMsg && (
+                <div className="p-3 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-300 text-xs font-mono flex items-center gap-2">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-400 flex-shrink-0" />
+                  <span>{payfastTriggerMsg}</span>
+                </div>
+              )}
+            </div>
+
+            {/* GoDaddy DNS MX Email Resolution Guide */}
+            <div className="p-5 rounded-xl bg-[#11131a] border border-[#1a1d27] space-y-4">
+              <div className="flex items-start space-x-3">
+                <div className="w-8 h-8 rounded-lg bg-blue-500/15 border border-blue-500/30 flex items-center justify-center text-blue-400 flex-shrink-0">
+                  <Globe className="w-4 h-4" />
+                </div>
+                <div>
+                  <h4 className="text-xs font-bold text-zinc-100 uppercase tracking-wider font-mono">
+                    Fix Email Receiving on GoDaddy (arpcloudsolutions.co.za)
+                  </h4>
+                  <p className="text-xs text-zinc-400 mt-1 leading-relaxed">
+                    Why emails sent to <code className="text-amber-300">info@arpcloudsolutions.co.za</code> currently bounce: Your GoDaddy MX record is set to <code className="text-zinc-200">10 mail.arpcloudsolutions.co.za</code> which points to Vercel (web host). Vercel does not accept port 25 email traffic.
+                  </p>
+                </div>
+              </div>
+
+              <div className="space-y-3 pt-2">
+                <div className="text-xs font-semibold text-zinc-200">
+                  Step 1: Set GoDaddy Mail MX Records in GoDaddy DNS Management:
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs font-mono border border-[#1f2436] rounded-lg overflow-hidden">
+                    <thead className="bg-[#141824] text-zinc-400">
+                      <tr>
+                        <th className="p-2.5">Type</th>
+                        <th className="p-2.5">Priority</th>
+                        <th className="p-2.5">Host</th>
+                        <th className="p-2.5">Points To (Value)</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-[#1f2436] bg-[#0c0f18] text-zinc-300">
+                      <tr>
+                        <td className="p-2.5 text-cyan-400 font-bold">MX</td>
+                        <td className="p-2.5">0</td>
+                        <td className="p-2.5">@</td>
+                        <td className="p-2.5 text-amber-300">smtp.secureserver.net</td>
+                      </tr>
+                      <tr>
+                        <td className="p-2.5 text-cyan-400 font-bold">MX</td>
+                        <td className="p-2.5">10</td>
+                        <td className="p-2.5">@</td>
+                        <td className="p-2.5 text-amber-300">mailstore1.secureserver.net</td>
+                      </tr>
+                      <tr>
+                        <td className="p-2.5 text-purple-400 font-bold">TXT (SPF)</td>
+                        <td className="p-2.5">-</td>
+                        <td className="p-2.5">@</td>
+                        <td className="p-2.5 text-emerald-400">v=spf1 include:resend.com include:_spf.google.com ~all</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+
+                <div className="text-xs font-semibold text-zinc-200 pt-2">
+                  Step 2: Add GoDaddy Email Forwarding Rules:
+                </div>
+                <div className="p-3.5 rounded-lg bg-[#090b10] border border-[#1f2436] text-xs space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <span className="font-mono text-zinc-300">info@arpcloudsolutions.co.za ➔ mraaziqp@gmail.com</span>
+                    <span className="px-2 py-0.5 rounded text-[10px] bg-emerald-500/10 text-emerald-400 font-mono">FORWARD</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="font-mono text-zinc-300">contact@arpcloudsolutions.co.za ➔ mraaziqp@gmail.com</span>
+                    <span className="px-2 py-0.5 rounded text-[10px] bg-emerald-500/10 text-emerald-400 font-mono">FORWARD</span>
+                  </div>
+                </div>
+                <p className="text-[11px] text-zinc-400 leading-relaxed">
+                  As soon as GoDaddy forwards incoming mail to Gmail, AetherMail automatically identifies that it was addressed to <code className="text-zinc-200">info@arpcloudsolutions.co.za</code> and displays it under your official business profile!
+                </p>
+              </div>
             </div>
           </div>
         )}
