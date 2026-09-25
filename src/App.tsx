@@ -713,6 +713,7 @@ export default function App() {
         isOpen={isComposeModalOpen}
         onClose={() => setIsComposeModalOpen(false)}
         accounts={accounts}
+        selectedAccountId={selectedAccountId}
         onEmailSent={() => {
           fetchAccounts();
           fetchEmails();

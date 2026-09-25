@@ -196,8 +196,8 @@ export async function createApp() {
   // Outbound email sending engine route
   app.post('/api/send-email', async (req, res) => {
     try {
-      const { accountId, to, subject, htmlBody } = req.body;
-      const result = await sendEmailAction({ accountId, to, subject, htmlBody });
+      const { accountId, to, cc, bcc, subject, htmlBody } = req.body;
+      const result = await sendEmailAction({ accountId, to, cc, bcc, subject, htmlBody });
       if (!result.success) {
         return res.status(400).json(result);
       }

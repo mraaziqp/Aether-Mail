@@ -655,29 +655,46 @@ async function dispatchViaStalwartSmtp(params) {
 // src/app/actions/send-email.ts
 var GMAIL_ACCOUNTS = {
   "mraaziqp@gmail.com": process.env.GMAIL_APP_PASSWORD || "yehajpcshymlzwcq",
-  "backupe9@gmail.com": "efuwpgkcfwsjzlwu"
+  "backupe9@gmail.com": process.env.BACKUPE9_APP_PASSWORD || "scpjnpbgzbilrttj"
+};
+var cleanEmailList = (raw) => {
+  if (!raw) return [];
+  if (Array.isArray(raw)) {
+    return raw.map((r) => r.trim()).filter((r) => r.includes("@"));
+  }
+  return raw.split(/[,;\s]+/).map((r) => r.trim()).filter((r) => r.includes("@"));
 };
 async function sendEmailAction(params) {
   try {
-    const { accountId, to, subject, htmlBody } = params;
-    if (!accountId || !to || !subject || !htmlBody) {
+    const { accountId, to, cc, bcc, subject, htmlBody } = params;
+    const toList = cleanEmailList(to);
+    const ccList = cleanEmailList(cc);
+    const bccList = cleanEmailList(bcc);
+    if (!accountId || toList.length === 0 || !subject || !htmlBody) {
       return {
         success: false,
-        error: "All fields (accountId, to, subject, htmlBody) are required to dispatch an email."
+        error: "Sender account, at least one recipient (to), subject, and message content are required."
       };
     }
     let senderAddress = accountId;
     let resolvedAccountId = accountId;
+    let dbAppPassword = "";
     try {
       const [matchedAcc] = await db.select().from(accounts).where(eq(accounts.id, accountId)).limit(1);
       if (matchedAcc) {
         senderAddress = matchedAcc.email_address;
         resolvedAccountId = matchedAcc.id;
+        if (matchedAcc.oauth_tokens && typeof matchedAcc.oauth_tokens === "object" && "app_password" in matchedAcc.oauth_tokens) {
+          dbAppPassword = String(matchedAcc.oauth_tokens.app_password);
+        }
       } else {
         const [matchedByEmail] = await db.select().from(accounts).where(eq(accounts.email_address, accountId)).limit(1);
         if (matchedByEmail) {
           senderAddress = matchedByEmail.email_address;
           resolvedAccountId = matchedByEmail.id;
+          if (matchedByEmail.oauth_tokens && typeof matchedByEmail.oauth_tokens === "object" && "app_password" in matchedByEmail.oauth_tokens) {
+            dbAppPassword = String(matchedByEmail.oauth_tokens.app_password);
+          }
         }
       }
     } catch (err) {
@@ -687,31 +704,33 @@ async function sendEmailAction(params) {
     let providerUsed = "Local Transport";
     let dispatchSuccess = false;
     let dispatchError = null;
-    if (senderAddress.toLowerCase().includes("@gmail.com")) {
-      const normalizedEmail = senderAddress.toLowerCase().trim();
-      const appPass = GMAIL_ACCOUNTS[normalizedEmail] || process.env.GMAIL_APP_PASSWORD || "yehajpcshymlzwcq";
+    const normalizedSender = senderAddress.toLowerCase().trim();
+    if (normalizedSender.includes("@gmail.com")) {
+      const appPass = dbAppPassword || GMAIL_ACCOUNTS[normalizedSender] || process.env.GMAIL_APP_PASSWORD || "yehajpcshymlzwcq";
       const transporter = nodemailer2.createTransport({
         host: "smtp.gmail.com",
         port: 465,
         secure: true,
         auth: {
-          user: normalizedEmail,
+          user: normalizedSender,
           pass: appPass
         }
       });
       try {
         const info = await transporter.sendMail({
-          from: senderAddress,
-          to: to.trim(),
+          from: `"${normalizedSender.split("@")[0]}" <${normalizedSender}>`,
+          to: toList,
+          cc: ccList.length > 0 ? ccList : void 0,
+          bcc: bccList.length > 0 ? bccList : void 0,
           subject: subject.trim(),
           html: htmlBody,
           text: htmlBody.replace(/<[^>]*>/g, "").trim(),
           headers: {
-            "X-Mailer": "AetherMail-Unified-Engine/2.0"
+            "X-Mailer": "AetherMail-Unified-Engine/2.5"
           }
         });
         messageId = info.messageId || messageId;
-        providerUsed = `Google SMTP (${normalizedEmail})`;
+        providerUsed = `Google SMTP (${normalizedSender})`;
         dispatchSuccess = true;
       } catch (gmailErr) {
         console.error("[sendEmailAction] Gmail SMTP delivery error:", gmailErr);
@@ -720,7 +739,7 @@ async function sendEmailAction(params) {
     } else if (process.env.SMTP_HOST || process.env.STALWART_SMTP_HOST || process.env.RESEND_API_KEY) {
       const relayResult = await dispatchViaStalwartSmtp({
         from: senderAddress,
-        to: to.trim(),
+        to: toList.join(", "),
         subject: subject.trim(),
         htmlBody,
         replyTo: senderAddress
@@ -730,44 +749,44 @@ async function sendEmailAction(params) {
         providerUsed = "Business SMTP Relay";
         dispatchSuccess = true;
       } else {
-        console.warn("[sendEmailAction] SMTP Relay warning:", relayResult.error);
-        messageId = `msg_biz_${Date.now()}`;
-        providerUsed = "Business Dispatch Engine (Queued)";
-        dispatchSuccess = true;
-      }
-    } else if (process.env.EMAIL_SYNC_API_URL) {
-      try {
-        const response = await fetch(process.env.EMAIL_SYNC_API_URL, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${process.env.EMAIL_SYNC_API_KEY ?? ""}`,
-            "X-Client-Agent": "AetherMail-Dispatcher/1.0"
-          },
-          body: JSON.stringify({
-            account_id: resolvedAccountId,
-            recipient: to,
-            subject,
-            html_content: htmlBody,
-            text_content: htmlBody.replace(/<[^>]*>/g, ""),
-            client_timestamp: (/* @__PURE__ */ new Date()).toISOString()
-          }),
-          signal: AbortSignal.timeout(15e3)
-        });
-        if (!response.ok) {
-          const detail = await response.text().catch(() => "");
-          throw new Error(`Sync bridge HTTP ${response.status}: ${detail.slice(0, 150)}`);
-        }
-        const data = await response.json().catch(() => ({}));
-        messageId = data.message_id || messageId;
-        providerUsed = "REST Sync Bridge";
-        dispatchSuccess = true;
-      } catch (bridgeErr) {
-        dispatchError = bridgeErr instanceof Error ? bridgeErr.message : String(bridgeErr);
+        dispatchError = relayResult.error || "Failed to dispatch via business SMTP relay";
       }
     } else {
-      providerUsed = "AetherMail Local Outbox";
-      dispatchSuccess = true;
+      const relayUser = "mraaziqp@gmail.com";
+      const relayPass = GMAIL_ACCOUNTS[relayUser];
+      const transporter = nodemailer2.createTransport({
+        host: "smtp.gmail.com",
+        port: 465,
+        secure: true,
+        auth: {
+          user: relayUser,
+          pass: relayPass
+        }
+      });
+      try {
+        const isArpCloud = senderAddress.includes("arpcloudsolutions.co.za");
+        const displayName = isArpCloud ? `ARP Cloud Solutions (${senderAddress})` : senderAddress;
+        const info = await transporter.sendMail({
+          from: `"${displayName}" <${relayUser}>`,
+          replyTo: senderAddress,
+          to: toList,
+          cc: ccList.length > 0 ? ccList : void 0,
+          bcc: bccList.length > 0 ? bccList : void 0,
+          subject: subject.trim(),
+          html: htmlBody,
+          text: htmlBody.replace(/<[^>]*>/g, "").trim(),
+          headers: {
+            "X-Mailer": "AetherMail-Unified-Engine/2.5",
+            "X-Business-Sender": senderAddress
+          }
+        });
+        messageId = info.messageId || messageId;
+        providerUsed = `Authenticated SMTP Relay (${senderAddress} via ${relayUser})`;
+        dispatchSuccess = true;
+      } catch (relayErr) {
+        console.error("[sendEmailAction] Business SMTP relay delivery error:", relayErr);
+        dispatchError = relayErr instanceof Error ? relayErr.message : String(relayErr);
+      }
     }
     if (!dispatchSuccess && dispatchError) {
       return {
@@ -777,21 +796,25 @@ async function sendEmailAction(params) {
     }
     try {
       const snippet = htmlBody.replace(/<[^>]*>/g, "").slice(0, 140).trim();
+      const allToText = toList.join(", ");
+      const allCcText = ccList.length > 0 ? ` (Cc: ${ccList.join(", ")})` : "";
       const newRecord = {
         id: messageId,
         account_id: resolvedAccountId,
         thread_id: `thread_${Date.now()}`,
         subject,
         sender: senderAddress,
-        body_snippet: `To: ${to} \u2014 ${snippet}`,
+        body_snippet: `To: ${allToText}${allCcText} \u2014 ${snippet}`,
         full_body: `<div style="padding-bottom: 8px; margin-bottom: 12px; border-bottom: 1px solid #333; font-size: 12px; color: #888;">
-          <strong>To:</strong> ${to}<br/>
+          <strong>To:</strong> ${allToText}<br/>
+          ${ccList.length > 0 ? `<strong>Cc:</strong> ${ccList.join(", ")}<br/>` : ""}
+          ${bccList.length > 0 ? `<strong>Bcc:</strong> ${bccList.join(", ")}<br/>` : ""}
           <strong>From:</strong> ${senderAddress}<br/>
           <strong>Dispatched Via:</strong> ${providerUsed}
         </div>
         ${htmlBody}`,
         category: "work",
-        ai_summary: `Outbound dispatch to ${to}: ${subject}`,
+        ai_summary: `Outbound dispatch to ${allToText}: ${subject}`,
         requires_alert: false,
         is_read: true,
         received_at: /* @__PURE__ */ new Date()
@@ -2209,8 +2232,8 @@ Action Required: Immediate human attention flagged by Gemini 2.5 Flash.`;
   });
   app.post("/api/send-email", async (req, res) => {
     try {
-      const { accountId, to, subject, htmlBody } = req.body;
-      const result = await sendEmailAction({ accountId, to, subject, htmlBody });
+      const { accountId, to, cc, bcc, subject, htmlBody } = req.body;
+      const result = await sendEmailAction({ accountId, to, cc, bcc, subject, htmlBody });
       if (!result.success) {
         return res.status(400).json(result);
       }
