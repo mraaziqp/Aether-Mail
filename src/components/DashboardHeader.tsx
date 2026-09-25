@@ -12,7 +12,8 @@ import {
   Key,
   Activity,
   RefreshCw,
-  Bell
+  Bell,
+  LogOut
 } from 'lucide-react';
 import type { ParsedSearchIntent, Account } from '../types.ts';
 
@@ -35,6 +36,8 @@ interface DashboardHeaderProps {
   loading?: boolean;
   notificationPermission?: NotificationPermission;
   onRequestNotificationPermission?: () => void;
+  onLogout?: () => void;
+  onOpenProfileModal?: () => void;
 }
 
 const SAMPLE_QUERIES = [
@@ -62,6 +65,8 @@ export const DashboardHeader: React.FC<DashboardHeaderProps> = ({
   loading = false,
   notificationPermission = 'default',
   onRequestNotificationPermission,
+  onLogout,
+  onOpenProfileModal,
 }) => {
   const [isFocused, setIsFocused] = useState(false);
 
@@ -261,6 +266,35 @@ export const DashboardHeader: React.FC<DashboardHeaderProps> = ({
           <Send className="w-3 h-3 text-amber-400" />
           <span className="text-[11px]">Webhook</span>
         </button>
+
+        {/* User Profile Pill & Quick Logout */}
+        <div className="flex items-center space-x-1 pl-1 border-l border-[#1a1d27]">
+          {onOpenProfileModal && (
+            <button
+              onClick={onOpenProfileModal}
+              className="flex items-center space-x-1.5 px-2.5 py-1.5 rounded-lg bg-[#11131a] hover:bg-[#151821] border border-[#1a1d27] hover:border-[#262b3a] text-zinc-200 text-xs transition-colors"
+              title="Manage Profile & Identity"
+            >
+              <div className="w-4 h-4 rounded-full bg-gradient-to-tr from-amber-500 to-amber-300 flex items-center justify-center text-[9px] font-extrabold text-black flex-shrink-0">
+                M
+              </div>
+              <span className="font-mono text-[11px] hidden sm:inline">mraaziqp</span>
+              <span className="text-[8px] font-mono px-1 py-0.2 rounded bg-emerald-950 text-emerald-300 border border-emerald-800 hidden md:inline font-bold">
+                ADMIN
+              </span>
+            </button>
+          )}
+
+          {onLogout && (
+            <button
+              onClick={onLogout}
+              className="p-1.5 rounded-lg bg-[#11131a] hover:bg-rose-950/40 text-zinc-400 hover:text-rose-300 border border-[#1a1d27] hover:border-rose-900/50 transition-colors"
+              title="Secure Terminal Logout"
+            >
+              <LogOut className="w-3.5 h-3.5" />
+            </button>
+          )}
+        </div>
       </div>
     </header>
   );

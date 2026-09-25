@@ -35,6 +35,60 @@ export async function createApp() {
     res.json({ status: 'ok', time: new Date().toISOString() });
   });
 
+  // 1b. Admin Authentication & Profile Management Routes
+  let adminPassword = process.env.ADMIN_PASSWORD || '114477';
+  let adminUsername = process.env.ADMIN_USERNAME || 'mraaziqp';
+  let userProfile = {
+    username: adminUsername,
+    displayName: 'Mohamed Raaziq',
+    role: 'Super Admin',
+    primaryEmail: 'mraaziqp@gmail.com',
+    domain: 'arpcloudsolutions.co.za',
+    bio: 'Infrastructure & Payment Gateway Operations Lead',
+  };
+
+  app.post('/api/auth/login', (req, res) => {
+    const { username, password } = req.body;
+    if (username === adminUsername && password === adminPassword) {
+      const token = `aether_sec_${Buffer.from(`${adminUsername}:${Date.now()}`).toString('base64')}`;
+      return res.json({
+        success: true,
+        token,
+        user: userProfile,
+      });
+    }
+    return res.status(401).json({
+      success: false,
+      error: 'Invalid administrator credentials. Please check your username and password.',
+    });
+  });
+
+  app.get('/api/auth/me', (_req, res) => {
+    res.json({
+      success: true,
+      user: userProfile,
+    });
+  });
+
+  app.post('/api/auth/profile', (req, res) => {
+    const { displayName, primaryEmail, bio, currentPassword, newPassword } = req.body;
+    if (newPassword) {
+      if (currentPassword !== adminPassword) {
+        return res.status(400).json({ success: false, error: 'Current password incorrect' });
+      }
+      adminPassword = newPassword;
+    }
+    if (displayName) userProfile.displayName = displayName;
+    if (primaryEmail) userProfile.primaryEmail = primaryEmail;
+    if (bio !== undefined) userProfile.bio = bio;
+
+    return res.json({
+      success: true,
+      user: userProfile,
+      message: 'Profile updated successfully',
+    });
+  });
+
   // 2. Webhook Ingestion Route (mirroring /api/webhooks/email)
   app.post('/api/webhooks/email', async (req, res) => {
     try {

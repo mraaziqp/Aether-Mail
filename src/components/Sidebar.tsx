@@ -18,7 +18,8 @@ import {
   ChevronRight,
   ShieldAlert,
   Activity,
-  CheckCircle2
+  CheckCircle2,
+  LogOut
 } from 'lucide-react';
 import type { Account, EmailCategory, EmailItem } from '../types.ts';
 
@@ -42,6 +43,8 @@ interface SidebarProps {
   onToggleCollapse?: () => void;
   currentView?: 'feed' | 'developer';
   onSelectView?: (view: 'feed' | 'developer') => void;
+  onLogout?: () => void;
+  onOpenProfileModal?: () => void;
 }
 
 const CATEGORIES: { 
@@ -80,6 +83,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onToggleCollapse,
   currentView = 'feed',
   onSelectView,
+  onLogout,
+  onOpenProfileModal,
 }) => {
   const alertCount = emails.filter((e) => e.requires_alert && !e.is_read).length;
   const unreadCount = emails.filter((e) => !e.is_read).length;
@@ -469,6 +474,34 @@ export const Sidebar: React.FC<SidebarProps> = ({
             <span>Reset Demo Data</span>
           </button>
         )}
+
+        {/* User Profile & Logout section */}
+        <div className="pt-2 border-t border-[#1a1d27]/80 flex items-center justify-between">
+          <button
+            onClick={onOpenProfileModal}
+            className={`flex items-center ${isCollapsed ? 'justify-center w-full' : 'space-x-2 text-left'} hover:opacity-90 transition-opacity flex-1 min-w-0`}
+            title="Manage Profile & Identity"
+          >
+            <div className="w-6 h-6 rounded-full bg-gradient-to-tr from-amber-500 to-amber-300 flex items-center justify-center text-black font-extrabold text-[10px] flex-shrink-0 shadow-sm">
+              M
+            </div>
+            {!isCollapsed && (
+              <div className="flex-1 min-w-0">
+                <div className="text-[11px] font-semibold text-zinc-200 truncate">mraaziqp</div>
+                <div className="text-[9px] font-mono text-emerald-400 font-bold">SUPER ADMIN</div>
+              </div>
+            )}
+          </button>
+          {!isCollapsed && onLogout && (
+            <button
+              onClick={onLogout}
+              title="Secure Logout"
+              className="p-1 rounded text-zinc-500 hover:text-rose-400 hover:bg-rose-950/20 transition-colors"
+            >
+              <LogOut className="w-3.5 h-3.5" />
+            </button>
+          )}
+        </div>
 
         {/* Cloud SQL connection status */}
         {!isCollapsed && (

@@ -9,6 +9,8 @@ import { WebhookModal } from './components/WebhookModal.tsx';
 import { NewAccountModal } from './components/NewAccountModal.tsx';
 import { DeveloperModal } from './components/DeveloperModal.tsx';
 import { ComposeModal } from './components/ComposeModal.tsx';
+import { LoginScreen } from './components/LoginScreen.tsx';
+import { ProfileModal } from './components/ProfileModal.tsx';
 import type { Account, EmailItem, ParsedSearchIntent, BatchActionType } from './types.ts';
 
 export default function App() {
@@ -44,6 +46,38 @@ export default function App() {
   const [isAccountModalOpen, setIsAccountModalOpen] = useState<boolean>(false);
   const [isDeveloperModalOpen, setIsDeveloperModalOpen] = useState<boolean>(false);
   const [isComposeModalOpen, setIsComposeModalOpen] = useState<boolean>(false);
+
+  // User Authentication & Profile State
+  const [currentUser, setCurrentUser] = useState<{
+    username: string;
+    displayName: string;
+    role: string;
+    primaryEmail: string;
+  } | null>(() => {
+    try {
+      const saved = localStorage.getItem('aethermail_user');
+      return saved ? JSON.parse(saved) : null;
+    } catch {
+      return null;
+    }
+  });
+  const [isProfileModalOpen, setIsProfileModalOpen] = useState<boolean>(false);
+
+  const handleLoginSuccess = (user: {
+    username: string;
+    displayName: string;
+    role: string;
+    primaryEmail: string;
+  }) => {
+    setCurrentUser(user);
+  };
+
+  const handleLogout = () => {
+    localStorage.removeItem('aethermail_auth_token');
+    localStorage.removeItem('aethermail_user');
+    setCurrentUser(null);
+    setIsProfileModalOpen(false);
+  };
 
   // Jarvis Real-Time Sentry & Notification State
   const initialSyncDoneRef = useRef(false);
@@ -470,6 +504,10 @@ export default function App() {
 
   const alertCount = emails.filter((e) => e.requires_alert && !e.is_read).length;
 
+  if (!currentUser) {
+    return <LoginScreen onLoginSuccess={handleLoginSuccess} />;
+  }
+
   return (
     <div className="h-screen w-screen flex flex-col bg-[#090a0f] text-zinc-100 font-sans overflow-hidden antialiased select-none">
       {/* 0. Unified Top Dashboard Header with Gemini Smart Search */}
@@ -492,6 +530,8 @@ export default function App() {
         loading={loading}
         notificationPermission={notificationPermission}
         onRequestNotificationPermission={handleToggleOrRequestNotifications}
+        onLogout={handleLogout}
+        onOpenProfileModal={() => setIsProfileModalOpen(true)}
       />
 
       {/* Jarvis Urgent Alert Banner */}
@@ -578,6 +618,8 @@ export default function App() {
           onToggleCollapse={() => setIsSidebarCollapsed((prev) => !prev)}
           currentView={currentView}
           onSelectView={setCurrentView}
+          onLogout={handleLogout}
+          onOpenProfileModal={() => setIsProfileModalOpen(true)}
         />
 
         {currentView === 'developer' ? (
@@ -674,6 +716,22 @@ export default function App() {
         onEmailSent={() => {
           fetchAccounts();
           fetchEmails();
+        }}
+      />
+
+      {/* Profile Management Modal */}
+      <ProfileModal
+        isOpen={isProfileModalOpen}
+        onClose={() => setIsProfileModalOpen(false)}
+        accounts={accounts}
+        onLogout={handleLogout}
+        currentUser={currentUser || undefined}
+        onUpdateProfile={(updated) => {
+          if (currentUser) {
+            const next = { ...currentUser, ...updated };
+            setCurrentUser(next);
+            localStorage.setItem('aethermail_user', JSON.stringify(next));
+          }
         }}
       />
     </div>
