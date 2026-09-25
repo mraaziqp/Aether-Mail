@@ -161,15 +161,17 @@ export async function createApp() {
         const ntfyTopic = process.env.NTFY_TOPIC || 'aethermail-alerts';
         try {
           const pushBody = `From: ${sender}\n\nSubject: ${subject}\n\nAI Summary: ${aiExtraction.summary}\n\nAction Required: Immediate human attention flagged by Gemini 2.5 Flash.`;
-          await fetch(`https://ntfy.sh/${ntfyTopic}`, {
+          await fetch('https://ntfy.sh', {
             method: 'POST',
-            headers: {
-              'Title': `🚨 [AetherMail Alert] ${subject.slice(0, 60)}`,
-              'Priority': 'urgent',
-              'Tags': 'warning,rotating_light,email',
-              'Click': process.env.APP_URL || 'https://aethermail.internal',
-            },
-            body: pushBody,
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              topic: ntfyTopic,
+              title: `🚨 [AetherMail Alert] ${subject.slice(0, 60)}`,
+              message: pushBody,
+              priority: 4,
+              tags: ['warning', 'rotating_light', 'email'],
+              click: process.env.APP_URL || 'https://mail.arpcloudsolutions.co.za',
+            }),
             signal: AbortSignal.timeout(3000),
           });
           ntfyDispatched = true;

@@ -91,15 +91,17 @@ export async function POST(request: Request): Promise<Response> {
       try {
         const pushBody = `From: ${rawPayload.sender}\n\nSubject: ${rawPayload.subject}\n\nAI Summary: ${aiExtraction.summary}\n\nAction Required: Immediate human attention requested.`;
         
-        await fetch(`https://ntfy.sh/${ntfyTopic}`, {
+        await fetch('https://ntfy.sh', {
           method: 'POST',
-          headers: {
-            'Title': `🚨 [AetherMail Alert] ${rawPayload.subject.slice(0, 60)}`,
-            'Priority': 'urgent',
-            'Tags': 'warning,rotating_light,email',
-            'Click': process.env.APP_URL || 'https://aethermail.internal',
-          },
-          body: pushBody,
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            topic: ntfyTopic,
+            title: `🚨 [AetherMail Alert] ${rawPayload.subject.slice(0, 60)}`,
+            message: pushBody,
+            priority: 4,
+            tags: ['warning', 'rotating_light', 'email'],
+            click: process.env.APP_URL || 'https://mail.arpcloudsolutions.co.za',
+          }),
           signal: AbortSignal.timeout(3000), // 3s non-blocking timeout
         });
         ntfyDispatched = true;

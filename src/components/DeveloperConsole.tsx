@@ -989,7 +989,16 @@ export const DeveloperConsole: React.FC<DeveloperConsoleProps> = ({
                   </div>
                 </div>
 
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <a
+                    href="https://my.payfast.io/account/activate/26254001?token=7dc8c63720a24514ead2dd210bf442bc"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-500/40 text-xs font-semibold text-emerald-300 transition-colors"
+                  >
+                    <span>Activate PayFast Account</span>
+                    <ExternalLink className="w-3.5 h-3.5" />
+                  </a>
                   <a
                     href="https://www.payfast.co.za/user/login"
                     target="_blank"

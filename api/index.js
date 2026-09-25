@@ -298,20 +298,22 @@ async function syncGmailAccount(emailAddress, appPassword, limit = 20) {
               if (requiresAlert) {
                 const ntfyTopic = process.env.NTFY_TOPIC || "aethermail-alerts";
                 try {
-                  await fetch(`https://ntfy.sh/${ntfyTopic}`, {
+                  await fetch("https://ntfy.sh", {
                     method: "POST",
-                    headers: {
-                      Title: `\u{1F6A8} [Jarvis Alert] ${subject.slice(0, 60)}`,
-                      Priority: "urgent",
-                      Tags: "rotating_light,envelope,warning",
-                      Click: "https://aethermail-five.vercel.app"
-                    },
-                    body: `Account: ${cleanEmail}
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                      topic: ntfyTopic,
+                      title: `\u{1F6A8} [Jarvis Alert] ${subject.slice(0, 60)}`,
+                      message: `Account: ${cleanEmail}
 From: ${sender}
 
 Subject: ${subject}
 
 Summary: ${snippet.slice(0, 150)}`,
+                      priority: 4,
+                      tags: ["rotating_light", "envelope", "warning"],
+                      click: process.env.APP_URL || "https://mail.arpcloudsolutions.co.za"
+                    }),
                     signal: AbortSignal.timeout(3e3)
                   });
                 } catch (pushErr) {
@@ -2209,15 +2211,17 @@ Subject: ${subject}
 AI Summary: ${aiExtraction.summary}
 
 Action Required: Immediate human attention flagged by Gemini 2.5 Flash.`;
-          await fetch(`https://ntfy.sh/${ntfyTopic}`, {
+          await fetch("https://ntfy.sh", {
             method: "POST",
-            headers: {
-              "Title": `\u{1F6A8} [AetherMail Alert] ${subject.slice(0, 60)}`,
-              "Priority": "urgent",
-              "Tags": "warning,rotating_light,email",
-              "Click": process.env.APP_URL || "https://aethermail.internal"
-            },
-            body: pushBody,
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              topic: ntfyTopic,
+              title: `\u{1F6A8} [AetherMail Alert] ${subject.slice(0, 60)}`,
+              message: pushBody,
+              priority: 4,
+              tags: ["warning", "rotating_light", "email"],
+              click: process.env.APP_URL || "https://mail.arpcloudsolutions.co.za"
+            }),
             signal: AbortSignal.timeout(3e3)
           });
           ntfyDispatched = true;

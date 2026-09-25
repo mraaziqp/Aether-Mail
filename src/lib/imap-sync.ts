@@ -181,15 +181,17 @@ export async function syncGmailAccount(
             if (requiresAlert) {
               const ntfyTopic = process.env.NTFY_TOPIC || 'aethermail-alerts';
               try {
-                await fetch(`https://ntfy.sh/${ntfyTopic}`, {
+                await fetch('https://ntfy.sh', {
                   method: 'POST',
-                  headers: {
-                    Title: `🚨 [Jarvis Alert] ${subject.slice(0, 60)}`,
-                    Priority: 'urgent',
-                    Tags: 'rotating_light,envelope,warning',
-                    Click: 'https://aethermail-five.vercel.app',
-                  },
-                  body: `Account: ${cleanEmail}\nFrom: ${sender}\n\nSubject: ${subject}\n\nSummary: ${snippet.slice(0, 150)}`,
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    topic: ntfyTopic,
+                    title: `🚨 [Jarvis Alert] ${subject.slice(0, 60)}`,
+                    message: `Account: ${cleanEmail}\nFrom: ${sender}\n\nSubject: ${subject}\n\nSummary: ${snippet.slice(0, 150)}`,
+                    priority: 4,
+                    tags: ['rotating_light', 'envelope', 'warning'],
+                    click: process.env.APP_URL || 'https://mail.arpcloudsolutions.co.za',
+                  }),
                   signal: AbortSignal.timeout(3000),
                 });
               } catch (pushErr) {
