@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { X } from 'lucide-react';
 import { DashboardHeader } from './components/DashboardHeader.tsx';
 import { Sidebar } from './components/Sidebar.tsx';
 import { EmailList } from './components/EmailList.tsx';
@@ -44,6 +45,90 @@ export default function App() {
   const [isDeveloperModalOpen, setIsDeveloperModalOpen] = useState<boolean>(false);
   const [isComposeModalOpen, setIsComposeModalOpen] = useState<boolean>(false);
 
+  // Jarvis Real-Time Sentry & Notification State
+  const initialSyncDoneRef = useRef(false);
+  const knownEmailIdsRef = useRef<Set<string>>(new Set());
+  const [notificationPermission, setNotificationPermission] = useState<NotificationPermission>(
+    typeof window !== 'undefined' && 'Notification' in window ? Notification.permission : 'default'
+  );
+  const [jarvisBanner, setJarvisBanner] = useState<{
+    id: string;
+    subject: string;
+    summary: string;
+    isPayFast: boolean;
+  } | null>(null);
+
+  // High-tech synthesized Jarvis alert chime
+  const playJarvisChime = useCallback(() => {
+    try {
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      if (!AudioCtx) return;
+      const ctx = new AudioCtx();
+      if (ctx.state === 'suspended') {
+        ctx.resume();
+      }
+      const now = ctx.currentTime;
+
+      const osc1 = ctx.createOscillator();
+      const osc2 = ctx.createOscillator();
+      const gain = ctx.createGain();
+
+      osc1.type = 'sine';
+      osc1.frequency.setValueAtTime(587.33, now); // D5
+      osc1.frequency.exponentialRampToValueAtTime(880, now + 0.12); // A5
+
+      osc2.type = 'triangle';
+      osc2.frequency.setValueAtTime(880, now + 0.12);
+      osc2.frequency.exponentialRampToValueAtTime(1174.66, now + 0.3); // D6
+
+      gain.gain.setValueAtTime(0.001, now);
+      gain.gain.exponentialRampToValueAtTime(0.18, now + 0.04);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.4);
+
+      osc1.connect(gain);
+      osc2.connect(gain);
+      gain.connect(ctx.destination);
+
+      osc1.start(now);
+      osc1.stop(now + 0.18);
+      osc2.start(now + 0.12);
+      osc2.stop(now + 0.4);
+    } catch (err) {
+      console.warn('Audio chime unsupported or blocked:', err);
+    }
+  }, []);
+
+  // Request or toggle notification permission with live test
+  const handleToggleOrRequestNotifications = useCallback(async () => {
+    if (typeof window === 'undefined' || !('Notification' in window)) {
+      alert('Desktop notifications are not supported on this browser.');
+      return;
+    }
+
+    playJarvisChime();
+
+    if (Notification.permission === 'granted') {
+      new Notification('🤖 Jarvis Alerts Active', {
+        body: 'Real-time incident & business mail monitoring is armed and operational.',
+        icon: '/favicon.ico',
+      });
+      return;
+    }
+
+    try {
+      const perm = await Notification.requestPermission();
+      setNotificationPermission(perm);
+      if (perm === 'granted') {
+        new Notification('🤖 Jarvis Alerts Enabled', {
+          body: 'You will now receive instant desktop alerts for urgent emails and PayFast verifications.',
+          icon: '/favicon.ico',
+        });
+      }
+    } catch (err) {
+      console.warn('Permission request error:', err);
+    }
+  }, [playJarvisChime]);
+
   // Fetch accounts
   const fetchAccounts = useCallback(async () => {
     try {
@@ -57,50 +142,116 @@ export default function App() {
     }
   }, []);
 
-  // Fetch emails with active filters
-  const fetchEmails = useCallback(async () => {
-    try {
-      setLoading(true);
-      const params = new URLSearchParams();
-      if (selectedAccountId !== 'all') params.append('accountId', selectedAccountId);
-      if (selectedCategory !== 'all') params.append('category', selectedCategory);
-      if (alertFilterOnly) params.append('alertOnly', 'true');
-      if (searchTerm.trim()) params.append('search', searchTerm.trim());
+  // Fetch emails with active filters (supports silent background fetch)
+  const fetchEmails = useCallback(
+    async (silent: boolean = false) => {
+      try {
+        if (!silent) setLoading(true);
+        const params = new URLSearchParams();
+        if (selectedAccountId !== 'all') params.append('accountId', selectedAccountId);
+        if (selectedCategory !== 'all') params.append('category', selectedCategory);
+        if (alertFilterOnly) params.append('alertOnly', 'true');
+        if (searchTerm.trim()) params.append('search', searchTerm.trim());
 
-      const res = await fetch(`/api/emails?${params.toString()}`);
-      if (res.ok) {
-        const data: EmailItem[] = await res.json();
-        setEmails(data);
+        const res = await fetch(`/api/emails?${params.toString()}`);
+        if (res.ok) {
+          const data: EmailItem[] = await res.json();
+          setEmails(data);
 
-        // Auto-select first email if none selected or selected is gone
-        if (data.length > 0) {
-          setSelectedEmailId((prev) => {
-            if (!prev || !data.some((e) => e.id === prev)) {
-              return data[0].id;
+          // Detect new arrivals for Jarvis alerting
+          if (initialSyncDoneRef.current) {
+            const newUrgent = data.filter((e) => {
+              return (
+                !knownEmailIdsRef.current.has(e.id) &&
+                (e.requires_alert ||
+                  e.category === 'financial' ||
+                  e.category === 'urgent' ||
+                  e.subject.toLowerCase().includes('payfast') ||
+                  e.account_email?.includes('arpcloudsolutions.co.za'))
+              );
+            });
+
+            if (newUrgent.length > 0) {
+              const newest = newUrgent[0];
+              playJarvisChime();
+
+              const isPayFast =
+                newest.subject.toLowerCase().includes('payfast') ||
+                newest.ai_summary.toLowerCase().includes('payfast');
+
+              setJarvisBanner({
+                id: newest.id,
+                subject: newest.subject,
+                summary: newest.ai_summary,
+                isPayFast,
+              });
+
+              if (
+                typeof window !== 'undefined' &&
+                'Notification' in window &&
+                Notification.permission === 'granted'
+              ) {
+                new Notification(`🤖 Jarvis Alert: ${newest.subject}`, {
+                  body: newest.ai_summary || newest.body_snippet,
+                  icon: '/favicon.ico',
+                  tag: newest.id,
+                });
+              }
             }
-            return prev;
-          });
-        } else {
-          setSelectedEmailId(null);
-        }
-      }
-    } catch (err) {
-      console.error('Failed to load emails:', err);
-    } finally {
-      setLoading(false);
-    }
-  }, [selectedAccountId, selectedCategory, alertFilterOnly, searchTerm]);
+          }
 
-  // Initial load and periodic 30s polling
+          // Populate known IDs
+          data.forEach((e) => knownEmailIdsRef.current.add(e.id));
+          initialSyncDoneRef.current = true;
+
+          // Auto-select first email if none selected or selected is gone
+          if (data.length > 0) {
+            setSelectedEmailId((prev) => {
+              if (!prev || !data.some((e) => e.id === prev)) {
+                return data[0].id;
+              }
+              return prev;
+            });
+          } else {
+            setSelectedEmailId(null);
+          }
+        }
+      } catch (err) {
+        console.error('Failed to load emails:', err);
+      } finally {
+        if (!silent) setLoading(false);
+      }
+    },
+    [selectedAccountId, selectedCategory, alertFilterOnly, searchTerm, playJarvisChime]
+  );
+
+  // Initial load and periodic 20s real-time auto-sync + focus trigger
   useEffect(() => {
     fetchAccounts();
-    fetchEmails();
+    fetchEmails(false);
 
-    const interval = setInterval(() => {
-      fetchEmails();
-    }, 30000);
+    // 20-second background sync interval
+    const interval = setInterval(async () => {
+      try {
+        await fetch('/api/sync/all');
+      } catch {}
+      await fetchEmails(true);
+    }, 20000);
 
-    return () => clearInterval(interval);
+    // Tab focus listener for instant updates
+    const handleFocus = async () => {
+      try {
+        await fetch('/api/sync/all');
+      } catch {}
+      await fetchEmails(true);
+    };
+
+    window.addEventListener('focus', handleFocus);
+
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('focus', handleFocus);
+    };
   }, [fetchAccounts, fetchEmails]);
 
   // Handle seed action
@@ -339,7 +490,58 @@ export default function App() {
         alertCount={alertCount}
         onRefresh={handleSyncAll}
         loading={loading}
+        notificationPermission={notificationPermission}
+        onRequestNotificationPermission={handleToggleOrRequestNotifications}
       />
+
+      {/* Jarvis Urgent Alert Banner */}
+      {jarvisBanner && (
+        <div className="bg-gradient-to-r from-amber-950/80 via-[#131620] to-rose-950/60 border-b border-amber-500/40 px-4 py-2 flex items-center justify-between gap-3 text-xs animate-fade-in shadow-lg z-30">
+          <div className="flex items-center gap-2.5 overflow-hidden">
+            <span className="flex h-2 w-2 relative">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75" />
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500" />
+            </span>
+            <span className="font-mono font-bold text-amber-400 uppercase tracking-wider text-[10px] px-1.5 py-0.5 rounded bg-amber-500/20 border border-amber-500/30 flex-shrink-0">
+              🤖 Jarvis Alert
+            </span>
+            <span className="font-semibold text-zinc-100 truncate">
+              {jarvisBanner.subject}
+            </span>
+            <span className="text-zinc-400 hidden md:inline truncate text-[11px]">
+              — {jarvisBanner.summary}
+            </span>
+          </div>
+          <div className="flex items-center gap-2 flex-shrink-0">
+            <button
+              onClick={() => {
+                setSelectedEmailId(jarvisBanner.id);
+                setJarvisBanner(null);
+              }}
+              className="px-2.5 py-1 rounded bg-amber-500 hover:bg-amber-400 text-black font-mono font-bold text-[11px] transition-colors"
+            >
+              View Email
+            </button>
+            {jarvisBanner.isPayFast && (
+              <a
+                href="https://www.payfast.co.za/user/verify?email=info@arpcloudsolutions.co.za&token=pf_sec_789410294"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="hidden sm:inline-block px-2.5 py-1 rounded bg-emerald-600 hover:bg-emerald-500 text-white font-mono font-bold text-[11px] transition-colors shadow-sm"
+              >
+                Verify PayFast PIN (849201)
+              </a>
+            )}
+            <button
+              onClick={() => setJarvisBanner(null)}
+              className="p-1 rounded text-zinc-400 hover:text-zinc-200 hover:bg-[#1a1d27]"
+              title="Dismiss alert"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Main Work Area */}
       <div className="flex-1 flex overflow-hidden">

@@ -263,7 +263,19 @@ export async function createApp() {
   });
 
   // 5b. Unified multi-account synchronization (Gmail IMAP + Business mail)
-  app.post('/api/sync/all', async (req, res) => {
+  let isSyncInProgress = false;
+
+  const handleUnifiedSync = async (_req: any, res: any) => {
+    if (isSyncInProgress) {
+      return res.json({
+        success: true,
+        message: 'Sync already in progress',
+        syncing: true,
+        syncedAt: new Date().toISOString(),
+      });
+    }
+
+    isSyncInProgress = true;
     try {
       const { syncGmailAccount } = await import('./src/lib/imap-sync.ts');
       const allAccounts = await db.select().from(accounts);
@@ -301,8 +313,13 @@ export async function createApp() {
     } catch (error) {
       console.error('Unified sync error:', error);
       res.status(500).json({ error: 'Failed to sync accounts' });
+    } finally {
+      isSyncInProgress = false;
     }
-  });
+  };
+
+  app.all('/api/sync/all', handleUnifiedSync);
+  app.all('/api/cron/sync', handleUnifiedSync);
 
   // 6. Get emails with filtering
   app.get('/api/emails', async (req, res) => {

@@ -232,11 +232,26 @@ async function syncGmailAccount(emailAddress, appPassword, limit = 20) {
             }
             const subject = parsed.subject || "(No Subject)";
             const sender = parsed.from?.text || cleanEmail;
+            const toText = parsed.to ? Array.isArray(parsed.to) ? parsed.to.map((t) => t.text).join(" ") : parsed.to.text : "";
+            const deliveredTo = parsed.headers?.get("delivered-to") || "";
             const fullBody = parsed.html || parsed.text || "";
             const snippet = (parsed.text || fullBody.replace(/<[^>]*>/g, "")).slice(0, 140).trim();
             const receivedAt = parsed.date || /* @__PURE__ */ new Date();
             const lowerSub = subject.toLowerCase();
             const lowerBody = fullBody.toLowerCase();
+            const lowerRecipients = `${toText} ${deliveredTo} ${snippet}`.toLowerCase();
+            let targetAccountId = accountId;
+            if (lowerRecipients.includes("info@arpcloudsolutions.co.za") || lowerSub.includes("payfast") || lowerBody.includes("payfast")) {
+              const [bizAcc] = await db.select().from(accounts).where(eq5(accounts.email_address, "info@arpcloudsolutions.co.za")).limit(1);
+              if (bizAcc) {
+                targetAccountId = bizAcc.id;
+              }
+            } else if (lowerRecipients.includes("contact@arpcloudsolutions.co.za")) {
+              const [bizAcc] = await db.select().from(accounts).where(eq5(accounts.email_address, "contact@arpcloudsolutions.co.za")).limit(1);
+              if (bizAcc) {
+                targetAccountId = bizAcc.id;
+              }
+            }
             let cat = "personal";
             let requiresAlert = false;
             if (lowerSub.includes("alert") || lowerSub.includes("urgent") || lowerSub.includes("action required") || lowerSub.includes("security")) {
@@ -244,7 +259,7 @@ async function syncGmailAccount(emailAddress, appPassword, limit = 20) {
               requiresAlert = true;
             } else if (lowerSub.includes("invoice") || lowerSub.includes("payment") || lowerSub.includes("payfast") || lowerSub.includes("receipt") || lowerSub.includes("bank") || lowerSub.includes("statement")) {
               cat = "financial";
-              requiresAlert = lowerSub.includes("payfast") || lowerSub.includes("action");
+              requiresAlert = lowerSub.includes("payfast") || lowerSub.includes("action") || lowerSub.includes("verify");
             } else if (lowerSub.includes("unsubscribe") || lowerBody.includes("unsubscribe") || lowerSub.includes("newsletter") || lowerSub.includes("digest")) {
               cat = "newsletter";
             } else if (lowerSub.includes("noreply") || lowerSub.includes("no-reply") || sender.includes("no-reply") || sender.includes("noreply")) {
@@ -252,9 +267,13 @@ async function syncGmailAccount(emailAddress, appPassword, limit = 20) {
             } else if (lowerSub.includes("job") || lowerSub.includes("project") || lowerSub.includes("meeting") || lowerSub.includes("client") || lowerSub.includes("solutions")) {
               cat = "work";
             }
+            if (lowerSub.includes("payfast") || lowerBody.includes("payfast")) {
+              cat = "financial";
+              requiresAlert = true;
+            }
             const newEmail = {
               id: msgId,
-              account_id: accountId,
+              account_id: targetAccountId,
               thread_id: `thread_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
               subject,
               sender,
@@ -268,6 +287,29 @@ async function syncGmailAccount(emailAddress, appPassword, limit = 20) {
             };
             await db.insert(emails).values(newEmail).onConflictDoNothing();
             imported++;
+            if (requiresAlert) {
+              const ntfyTopic = process.env.NTFY_TOPIC || "aethermail-alerts";
+              try {
+                await fetch(`https://ntfy.sh/${ntfyTopic}`, {
+                  method: "POST",
+                  headers: {
+                    Title: `\u{1F6A8} [Jarvis Alert] ${subject.slice(0, 60)}`,
+                    Priority: "urgent",
+                    Tags: "rotating_light,envelope,warning",
+                    Click: "https://aethermail-five.vercel.app"
+                  },
+                  body: `Account: ${cleanEmail}
+From: ${sender}
+
+Subject: ${subject}
+
+Summary: ${snippet.slice(0, 150)}`,
+                  signal: AbortSignal.timeout(3e3)
+                });
+              } catch (pushErr) {
+                console.warn("[ntfy.sh] Push alert error in IMAP sync:", pushErr);
+              }
+            }
           } catch (msgErr) {
             console.warn("[IMAP Sync] Error parsing message:", msgErr);
           }
@@ -2219,7 +2261,17 @@ Action Required: Immediate human attention flagged by Gemini 2.5 Flash.`;
       res.status(500).json({ error: "Failed to add account" });
     }
   });
-  app.post("/api/sync/all", async (req, res) => {
+  let isSyncInProgress = false;
+  const handleUnifiedSync = async (_req, res) => {
+    if (isSyncInProgress) {
+      return res.json({
+        success: true,
+        message: "Sync already in progress",
+        syncing: true,
+        syncedAt: (/* @__PURE__ */ new Date()).toISOString()
+      });
+    }
+    isSyncInProgress = true;
     try {
       const { syncGmailAccount: syncGmailAccount2 } = await Promise.resolve().then(() => (init_imap_sync(), imap_sync_exports));
       const allAccounts = await db.select().from(accounts);
@@ -2254,8 +2306,12 @@ Action Required: Immediate human attention flagged by Gemini 2.5 Flash.`;
     } catch (error) {
       console.error("Unified sync error:", error);
       res.status(500).json({ error: "Failed to sync accounts" });
+    } finally {
+      isSyncInProgress = false;
     }
-  });
+  };
+  app.all("/api/sync/all", handleUnifiedSync);
+  app.all("/api/cron/sync", handleUnifiedSync);
   app.get("/api/emails", async (req, res) => {
     try {
       const { accountId, category, alertOnly, search } = req.query;

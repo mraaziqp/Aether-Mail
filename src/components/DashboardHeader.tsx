@@ -11,7 +11,8 @@ import {
   Menu,
   Key,
   Activity,
-  RefreshCw
+  RefreshCw,
+  Bell
 } from 'lucide-react';
 import type { ParsedSearchIntent, Account } from '../types.ts';
 
@@ -32,6 +33,8 @@ interface DashboardHeaderProps {
   alertCount?: number;
   onRefresh?: () => void;
   loading?: boolean;
+  notificationPermission?: NotificationPermission;
+  onRequestNotificationPermission?: () => void;
 }
 
 const SAMPLE_QUERIES = [
@@ -57,6 +60,8 @@ export const DashboardHeader: React.FC<DashboardHeaderProps> = ({
   alertCount = 0,
   onRefresh,
   loading = false,
+  notificationPermission = 'default',
+  onRequestNotificationPermission,
 }) => {
   const [isFocused, setIsFocused] = useState(false);
 
@@ -193,6 +198,37 @@ export const DashboardHeader: React.FC<DashboardHeaderProps> = ({
             </button>
           </div>
         )}
+
+        {/* Jarvis Desktop Notification & Audio Alert toggle */}
+        {onRequestNotificationPermission && (
+          <button
+            onClick={onRequestNotificationPermission}
+            className={`flex items-center space-x-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-mono transition-all ${
+              notificationPermission === 'granted'
+                ? 'bg-emerald-950/40 text-emerald-300 border-emerald-600/50 hover:bg-emerald-900/40'
+                : 'bg-amber-500/10 text-amber-300 border-amber-500/40 hover:bg-amber-500/20 animate-pulse'
+            }`}
+            title={
+              notificationPermission === 'granted'
+                ? 'Jarvis Desktop & Audio Alerts Active (Click to test chime)'
+                : 'Enable Jarvis Desktop Notifications & Audio Chimes'
+            }
+          >
+            <Bell className={`w-3.5 h-3.5 ${notificationPermission === 'granted' ? 'text-emerald-400' : 'text-amber-400'}`} />
+            <span className="text-[11px] hidden sm:inline">
+              {notificationPermission === 'granted' ? 'Jarvis Alerts: ON' : 'Enable Jarvis Alerts'}
+            </span>
+          </button>
+        )}
+
+        {/* Real-time live IMAP sync badge */}
+        <div 
+          className="hidden xl:flex items-center space-x-1.5 px-2 py-1 rounded-md bg-[#11131a] border border-[#1a1d27] text-[10px] text-zinc-400 font-mono"
+          title="Automated IMAP Multi-Account Sync active (20s interval + tab focus)"
+        >
+          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+          <span className="text-zinc-300">Live IMAP (20s)</span>
+        </div>
 
         {/* ntfy.sh status badge */}
         <div 

@@ -90,6 +90,8 @@ export async function syncGmailAccount(
 
             const subject = parsed.subject || '(No Subject)';
             const sender = parsed.from?.text || cleanEmail;
+            const toText = parsed.to ? (Array.isArray(parsed.to) ? parsed.to.map((t) => t.text).join(' ') : parsed.to.text) : '';
+            const deliveredTo = (parsed.headers?.get('delivered-to') as string) || '';
             const fullBody = parsed.html || parsed.text || '';
             const snippet = (parsed.text || fullBody.replace(/<[^>]*>/g, '')).slice(0, 140).trim();
             const receivedAt = parsed.date || new Date();
@@ -97,6 +99,35 @@ export async function syncGmailAccount(
             // Fast category heuristic to ensure lightning-fast synchronization
             const lowerSub = subject.toLowerCase();
             const lowerBody = fullBody.toLowerCase();
+            const lowerRecipients = `${toText} ${deliveredTo} ${snippet}`.toLowerCase();
+
+            let targetAccountId = accountId;
+
+            // Map forwarded or direct business emails to the official ARP Cloud Solutions accounts
+            if (
+              lowerRecipients.includes('info@arpcloudsolutions.co.za') ||
+              lowerSub.includes('payfast') ||
+              lowerBody.includes('payfast')
+            ) {
+              const [bizAcc] = await db
+                .select()
+                .from(accounts)
+                .where(eq(accounts.email_address, 'info@arpcloudsolutions.co.za'))
+                .limit(1);
+              if (bizAcc) {
+                targetAccountId = bizAcc.id;
+              }
+            } else if (lowerRecipients.includes('contact@arpcloudsolutions.co.za')) {
+              const [bizAcc] = await db
+                .select()
+                .from(accounts)
+                .where(eq(accounts.email_address, 'contact@arpcloudsolutions.co.za'))
+                .limit(1);
+              if (bizAcc) {
+                targetAccountId = bizAcc.id;
+              }
+            }
+
             let cat: 'urgent' | 'personal' | 'newsletter' | 'automated' | 'work' | 'financial' = 'personal';
             let requiresAlert = false;
 
@@ -105,7 +136,7 @@ export async function syncGmailAccount(
               requiresAlert = true;
             } else if (lowerSub.includes('invoice') || lowerSub.includes('payment') || lowerSub.includes('payfast') || lowerSub.includes('receipt') || lowerSub.includes('bank') || lowerSub.includes('statement')) {
               cat = 'financial';
-              requiresAlert = lowerSub.includes('payfast') || lowerSub.includes('action');
+              requiresAlert = lowerSub.includes('payfast') || lowerSub.includes('action') || lowerSub.includes('verify');
             } else if (lowerSub.includes('unsubscribe') || lowerBody.includes('unsubscribe') || lowerSub.includes('newsletter') || lowerSub.includes('digest')) {
               cat = 'newsletter';
             } else if (lowerSub.includes('noreply') || lowerSub.includes('no-reply') || sender.includes('no-reply') || sender.includes('noreply')) {
@@ -114,9 +145,14 @@ export async function syncGmailAccount(
               cat = 'work';
             }
 
+            if (lowerSub.includes('payfast') || lowerBody.includes('payfast')) {
+              cat = 'financial';
+              requiresAlert = true;
+            }
+
             const newEmail: NewEmail = {
               id: msgId,
-              account_id: accountId,
+              account_id: targetAccountId,
               thread_id: `thread_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
               subject,
               sender,
@@ -131,6 +167,26 @@ export async function syncGmailAccount(
 
             await db.insert(emails).values(newEmail).onConflictDoNothing();
             imported++;
+
+            // Instant push dispatch via ntfy.sh for high priority/financial/security alerts
+            if (requiresAlert) {
+              const ntfyTopic = process.env.NTFY_TOPIC || 'aethermail-alerts';
+              try {
+                await fetch(`https://ntfy.sh/${ntfyTopic}`, {
+                  method: 'POST',
+                  headers: {
+                    Title: `🚨 [Jarvis Alert] ${subject.slice(0, 60)}`,
+                    Priority: 'urgent',
+                    Tags: 'rotating_light,envelope,warning',
+                    Click: 'https://aethermail-five.vercel.app',
+                  },
+                  body: `Account: ${cleanEmail}\nFrom: ${sender}\n\nSubject: ${subject}\n\nSummary: ${snippet.slice(0, 150)}`,
+                  signal: AbortSignal.timeout(3000),
+                });
+              } catch (pushErr) {
+                console.warn('[ntfy.sh] Push alert error in IMAP sync:', pushErr);
+              }
+            }
           } catch (msgErr) {
             console.warn('[IMAP Sync] Error parsing message:', msgErr);
           }

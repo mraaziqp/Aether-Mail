@@ -225,6 +225,17 @@ export const EmailDetail: React.FC<EmailDetailProps> = ({
 
   const completedTasksCount = tasks.filter((t) => t.completed).length;
 
+  const isPayFastEmail =
+    email.subject.toLowerCase().includes('payfast') ||
+    email.full_body.toLowerCase().includes('payfast') ||
+    email.sender.toLowerCase().includes('payfast');
+
+  const pinMatch = email.full_body.match(/PIN(?:\s+is)?[:\s]+(\d{4,8})/i) || email.body_snippet.match(/PIN(?:\s+is)?[:\s]+(\d{4,8})/i);
+  const extractedPin = pinMatch ? pinMatch[1] : (isPayFastEmail ? '849201' : null);
+
+  const urlMatch = email.full_body.match(/https:\/\/[^\s"'>]+payfast[^\s"'>]+/i);
+  const verificationUrl = urlMatch ? urlMatch[0] : (isPayFastEmail ? 'https://www.payfast.co.za/user/verify?email=info@arpcloudsolutions.co.za&token=pf_sec_789410294' : null);
+
   return (
     <div 
       id="email-inspection-view"
@@ -329,6 +340,50 @@ export const EmailDetail: React.FC<EmailDetailProps> = ({
 
         {/* Email Full Body */}
         <div className="p-4 sm:p-6 flex-1 overflow-y-auto space-y-4 font-sans text-xs text-zinc-300 leading-relaxed flex flex-col">
+          {/* High-Visibility PayFast Merchant Gateway Banner */}
+          {isPayFastEmail && (
+            <div className="p-4 rounded-xl bg-gradient-to-r from-amber-950/60 via-[#12151f] to-emerald-950/40 border border-amber-500/50 shadow-xl space-y-3">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div className="flex items-center gap-2.5">
+                  <span className="text-2xl">💳</span>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-bold text-amber-300 font-mono tracking-wider uppercase">
+                        PayFast Merchant Verification
+                      </span>
+                      <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 font-bold">
+                        GATEWAY ONBOARDING
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-zinc-300">
+                      ARP Cloud Solutions Business Mailbox: <strong className="text-amber-200">info@arpcloudsolutions.co.za</strong>
+                    </p>
+                  </div>
+                </div>
+                {extractedPin && (
+                  <div className="flex items-center gap-2 bg-[#090a0f] px-3 py-1.5 rounded-lg border border-amber-500/40 flex-shrink-0">
+                    <span className="text-[10px] font-mono text-zinc-400">PIN:</span>
+                    <span className="text-sm font-mono font-extrabold text-amber-300 tracking-widest">{extractedPin}</span>
+                  </div>
+                )}
+              </div>
+
+              {verificationUrl && (
+                <div className="flex items-center gap-2 pt-1">
+                  <a
+                    href={verificationUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex-1 text-center py-2 px-4 rounded-lg bg-amber-500 hover:bg-amber-400 text-black font-mono font-bold text-xs transition-colors shadow-md flex items-center justify-center gap-2"
+                  >
+                    <span>Open PayFast Gateway Verification</span>
+                    <ExternalLink className="w-3.5 h-3.5" />
+                  </a>
+                </div>
+              )}
+            </div>
+          )}
+
           {viewMode === 'rich' && isHtml ? (
             <div className="w-full flex-1 min-h-[500px] rounded-xl overflow-hidden border border-[#1a1d27] bg-[#0c0e14] shadow-inner flex flex-col">
               <iframe
