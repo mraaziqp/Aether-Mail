@@ -891,19 +891,19 @@ v1Router.post('/sync/gmail', async (req: Request, res: Response) => {
       });
     }
 
-    const { syncGmailAccount } = await import('../lib/imap-sync.ts');
-    const result = await syncGmailAccount(email_address, app_password, limit || 20);
+    const { syncImapAccount } = await import('../lib/imap-sync.ts');
+    const result = await syncImapAccount(email_address, app_password, limit || 20);
 
     if (!result.success) {
       return res.status(400).json({
         success: false,
-        error: result.error || 'Failed to authenticate or sync with Gmail IMAP server.',
+        error: result.error || 'Failed to authenticate or sync with the IMAP server.',
       });
     }
 
     return res.json({
       success: true,
-      message: `Successfully synchronized ${result.imported} messages from Gmail inbox.`,
+      message: `Successfully synchronized ${result.imported} messages from ${email_address}.`,
       imported: result.imported,
       email_address,
     });

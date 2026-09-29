@@ -29,3 +29,21 @@ You are working on **AetherMail**, a unified AI-driven Network Operations Center
    - Always maintain the deep obsidian dark mode palette (`#090a0f`, `#11131a`, `#1a1d27`).
    - High-contrast Geist/Inter typography, 1px borders, monospace badges (`Geist Mono`).
    - High-density layouts: P0 alert tags (`URGENT`, `ACTION NEEDED`), split inspection drawer, action items checklist, and real-time sync telemetry.
+
+## Current work in progress — read first
+
+Business mail for `arpcloudsolutions.co.za` is mid-migration to Zoho (MX and real
+inboxes) + Resend (transactional), with AetherMail as an IMAP view on top.
+
+- **[HANDOVER.md](./HANDOVER.md)** — state, what is left, machine setup, traps.
+- **[BUSINESS-MAIL.md](./BUSINESS-MAIL.md)** — the step-by-step runbook.
+- The Route 53 tooling lives in the **other** repo: `mraaziqp/Consolidated-Hub`,
+  under `scripts/dns/`.
+
+Two standing rules that came out of this work:
+
+1. **No literal credential fallbacks.** `process.env.X || '<literal>'` has shipped
+   live secrets to GitHub three times in these repos. Config is env-only, and
+   absent config raises a clear error instead of silently appearing to work.
+2. **`api/index.js` is a committed build artifact.** Changing `src/` alone leaves
+   the old code deployed — run `npm run build:api` and commit the result.

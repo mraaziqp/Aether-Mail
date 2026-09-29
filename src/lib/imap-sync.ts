@@ -11,21 +11,80 @@ export interface ImapSyncResult {
   error?: string;
 }
 
+interface ImapProvider {
+  host: string;
+  port: number;
+  provider: string;
+  /** Junk folder name. Gmail namespaces its folders; most other servers do not. */
+  spamFolder: string;
+}
+
+const PROVIDERS: Record<string, ImapProvider> = {
+  'gmail.com':      { host: 'imap.gmail.com',        port: 993, provider: 'google',    spamFolder: '[Gmail]/Spam' },
+  'googlemail.com': { host: 'imap.gmail.com',        port: 993, provider: 'google',    spamFolder: '[Gmail]/Spam' },
+  'zoho.com':       { host: 'imap.zoho.com',         port: 993, provider: 'zoho',      spamFolder: 'Spam' },
+  'outlook.com':    { host: 'outlook.office365.com', port: 993, provider: 'microsoft', spamFolder: 'Junk Email' },
+  'hotmail.com':    { host: 'outlook.office365.com', port: 993, provider: 'microsoft', spamFolder: 'Junk Email' },
+  'live.com':       { host: 'outlook.office365.com', port: 993, provider: 'microsoft', spamFolder: 'Junk Email' },
+};
+
 /**
- * Connects to a Gmail account via IMAP using an App Password,
- * fetches recent messages, runs AI extraction, and stores them in AetherMail.
+ * Work out which IMAP server holds a given address.
+ *
+ * Business domains are the interesting case: the address is
+ * contact@arpcloudsolutions.co.za but the mailbox lives at Zoho, so the domain
+ * name tells you nothing. IMAP_HOST covers that — set it to the provider
+ * hosting your domain's mail.
+ *
+ * An unknown domain throws rather than falling back to Gmail. A silent Gmail
+ * default turns "this domain is not configured" into "authentication failed",
+ * which sends you hunting for a password problem that does not exist.
  */
-export async function syncGmailAccount(
+export function resolveImapProvider(emailAddress: string): ImapProvider {
+  const domain = emailAddress.split('@')[1]?.toLowerCase() ?? '';
+  const known = PROVIDERS[domain];
+  if (known) return known;
+
+  const host = process.env.IMAP_HOST?.trim();
+  if (!host) {
+    throw new Error(
+      `No IMAP server known for "${domain}". Set IMAP_HOST (and optionally ` +
+      `IMAP_PORT, IMAP_SPAM_FOLDER) to the server hosting mail for that domain — ` +
+      `e.g. IMAP_HOST=imap.zoho.com for a domain on Zoho Mail.`
+    );
+  }
+  return {
+    host,
+    port: Number(process.env.IMAP_PORT) || 993,
+    provider: process.env.IMAP_PROVIDER?.trim() || 'imap',
+    spamFolder: process.env.IMAP_SPAM_FOLDER?.trim() || 'Spam',
+  };
+}
+
+/**
+ * Connects to a mailbox over IMAP, fetches recent messages, runs AI extraction,
+ * and stores them in AetherMail. Works with any IMAP server — Gmail and Outlook
+ * are recognised by address, anything else (a business domain on Zoho, a local
+ * Stalwart instance) is configured through IMAP_HOST.
+ */
+export async function syncImapAccount(
   emailAddress: string,
   appPassword: string,
   limit: number = 20
 ): Promise<ImapSyncResult> {
   const cleanEmail = emailAddress.trim().toLowerCase();
   const cleanPassword = appPassword.replace(/\s+/g, '');
+  const target = resolveImapProvider(cleanEmail);
+
+  // Certificate verification stays on. It is the only thing standing between
+  // these mailbox credentials and anyone able to intercept the connection.
+  // IMAP_ALLOW_SELF_SIGNED exists for a local mail server using its own CA, and
+  // is deliberately opt-in per deployment rather than the default.
+  const allowSelfSigned = process.env.IMAP_ALLOW_SELF_SIGNED === 'true';
 
   const client = new ImapFlow({
-    host: 'imap.gmail.com',
-    port: 993,
+    host: target.host,
+    port: target.port,
     secure: true,
     auth: {
       user: cleanEmail,
@@ -33,7 +92,7 @@ export async function syncGmailAccount(
     },
     logger: false,
     tls: {
-      rejectUnauthorized: false,
+      rejectUnauthorized: !allowSelfSigned,
     },
     clientInfo: {
       name: 'AetherMail',
@@ -63,7 +122,7 @@ export async function syncGmailAccount(
     if (!existingAccount) {
       await db.insert(accounts).values({
         id: accountId,
-        provider: 'google',
+        provider: target.provider,
         email_address: cleanEmail,
         sync_status: 'synced',
         created_at: new Date(),
@@ -71,7 +130,7 @@ export async function syncGmailAccount(
     }
 
     let imported = 0;
-    const foldersToSync = ['INBOX', '[Gmail]/Spam'];
+    const foldersToSync = ['INBOX', target.spamFolder];
 
     for (const folderName of foldersToSync) {
       let lock;
@@ -237,3 +296,9 @@ export async function syncGmailAccount(
     }
   }
 }
+
+/**
+ * @deprecated Kept so existing callers and the built `dist/` bundle keep working.
+ * Use {@link syncImapAccount} — it handles business domains as well as Gmail.
+ */
+export const syncGmailAccount = syncImapAccount;

@@ -473,31 +473,50 @@ export async function createApp() {
 
     isSyncInProgress = true;
     try {
-      const { syncGmailAccount } = await import('./src/lib/imap-sync.ts');
+      const { syncImapAccount } = await import('./src/lib/imap-sync.ts');
       const allAccounts = await db.select().from(accounts);
       let totalImported = 0;
       const syncReports: Array<{ email: string; imported: number; status: string }> = [];
+
+      // Env fallbacks for mailboxes whose password is not stored on the account
+      // row. Env-only, with no literal defaults: a hardcoded fallback both leaks
+      // a live credential into the repo and hides the fact that config is missing.
+      const envPasswords = new Map<string, string>();
+      const addEnvPassword = (user?: string, pass?: string) => {
+        if (user?.trim() && pass?.trim()) envPasswords.set(user.trim().toLowerCase(), pass.trim());
+      };
+      addEnvPassword(process.env.GMAIL_USER, process.env.GMAIL_APP_PASSWORD);
+      addEnvPassword(process.env.BACKUPE9_USER, process.env.BACKUPE9_APP_PASSWORD);
+      addEnvPassword(process.env.AETHERMAIL_SENDER, process.env.IMAP_PASSWORD);
 
       for (const acc of allAccounts) {
         let appPass = '';
         if (acc.oauth_tokens && typeof acc.oauth_tokens === 'object' && 'app_password' in acc.oauth_tokens) {
           appPass = String((acc.oauth_tokens as any).app_password);
         }
-        if (!appPass && (acc.email_address === process.env.GMAIL_USER || acc.email_address === 'mraaziqp@gmail.com')) {
-          appPass = process.env.GMAIL_APP_PASSWORD || 'yehajpcshymlzwcq';
-        } else if (!appPass && (acc.email_address === process.env.BACKUPE9_USER || acc.email_address === 'backupe9@gmail.com')) {
-          appPass = process.env.BACKUPE9_APP_PASSWORD || 'scpjnpbgzbilrttj';
+        if (!appPass) {
+          appPass = envPasswords.get(acc.email_address.trim().toLowerCase()) || '';
         }
 
-        if (appPass && acc.email_address.includes('@gmail.com')) {
-          try {
-            const syncResult = await syncGmailAccount(acc.email_address, appPass, 30);
-            totalImported += syncResult.imported;
-            syncReports.push({ email: acc.email_address, imported: syncResult.imported, status: syncResult.success ? 'ok' : (syncResult.error || 'unknown') });
-          } catch (syncErr) {
-            console.warn(`[Sync] Error syncing ${acc.email_address}:`, syncErr);
-            syncReports.push({ email: acc.email_address, imported: 0, status: 'error' });
-          }
+        if (!appPass) {
+          syncReports.push({ email: acc.email_address, imported: 0, status: 'no credentials' });
+          continue;
+        }
+
+        // Any IMAP mailbox, not just Gmail — business mail lives on a custom
+        // domain, so gating on "@gmail.com" silently skipped the accounts that
+        // matter most.
+        try {
+          const syncResult = await syncImapAccount(acc.email_address, appPass, 30);
+          totalImported += syncResult.imported;
+          syncReports.push({ email: acc.email_address, imported: syncResult.imported, status: syncResult.success ? 'ok' : (syncResult.error || 'unknown') });
+        } catch (syncErr) {
+          console.warn(`[Sync] Error syncing ${acc.email_address}:`, syncErr);
+          syncReports.push({
+            email: acc.email_address,
+            imported: 0,
+            status: syncErr instanceof Error ? syncErr.message : 'error',
+          });
         }
       }
 

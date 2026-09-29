@@ -31,11 +31,20 @@ export interface SendEmailResponse {
   error?: string;
 }
 
-// Known credentials for authenticated sending profiles
-const GMAIL_ACCOUNTS: Record<string, string> = {
-  'mraaziqp@gmail.com': process.env.GMAIL_APP_PASSWORD || 'yehajpcshymlzwcq',
-  'backupe9@gmail.com': process.env.BACKUPE9_APP_PASSWORD || 'scpjnpbgzbilrttj',
-};
+// Credentials for authenticated sending profiles.
+//
+// Env-only, and built from whatever is actually configured. These previously
+// carried the live app passwords as `|| '<literal>'` fallbacks, which published
+// working Gmail credentials to the repo and made a missing env var look like a
+// working configuration until the day the password changed.
+const GMAIL_ACCOUNTS: Record<string, string> = Object.fromEntries(
+  ([
+    [process.env.GMAIL_USER, process.env.GMAIL_APP_PASSWORD],
+    [process.env.BACKUPE9_USER, process.env.BACKUPE9_APP_PASSWORD],
+  ] as Array<[string | undefined, string | undefined]>)
+    .filter((entry): entry is [string, string] => Boolean(entry[0]?.trim() && entry[1]?.trim()))
+    .map(([user, pass]) => [user.trim().toLowerCase(), pass.trim()])
+);
 
 const cleanEmailList = (raw?: string | string[]): string[] => {
   if (!raw) return [];
@@ -110,7 +119,13 @@ export async function sendEmailAction(params: SendEmailParams): Promise<SendEmai
     // 2. Dispatch Provider Routing
     // Case A: Sender is an authenticated Google/Gmail Account
     if (normalizedSender.includes('@gmail.com')) {
-      const appPass = dbAppPassword || GMAIL_ACCOUNTS[normalizedSender] || process.env.GMAIL_APP_PASSWORD || 'yehajpcshymlzwcq';
+      const appPass = dbAppPassword || GMAIL_ACCOUNTS[normalizedSender] || process.env.GMAIL_APP_PASSWORD;
+      if (!appPass) {
+        return {
+          success: false,
+          error: `No app password configured for ${normalizedSender}. Set GMAIL_APP_PASSWORD (or store one on the account) — nothing was sent.`,
+        };
+      }
 
       const transporter = nodemailer.createTransport({
         host: 'smtp.gmail.com',
@@ -164,8 +179,15 @@ export async function sendEmailAction(params: SendEmailParams): Promise<SendEmai
         console.warn('[sendEmailAction] Enterprise SMTP relay failed, falling back to Google authenticated relay:', relayResult.error);
         
         // Case C: Fallback to verified master Google SMTP relay with Reply-To
-        const relayUser = 'mraaziqp@gmail.com';
-        const relayPass = GMAIL_ACCOUNTS[relayUser] || process.env.GMAIL_APP_PASSWORD || 'yehajpcshymlzwcq';
+        const relayUser = (process.env.GMAIL_USER || '').trim().toLowerCase();
+        const relayPass = GMAIL_ACCOUNTS[relayUser] || process.env.GMAIL_APP_PASSWORD;
+
+        if (!relayUser || !relayPass) {
+          return {
+            success: false,
+            error: `Enterprise SMTP relay failed (${relayResult.error}) and no Google fallback relay is configured (GMAIL_USER / GMAIL_APP_PASSWORD). Nothing was sent.`,
+          };
+        }
 
         const transporter = nodemailer.createTransport({
           host: 'smtp.gmail.com',

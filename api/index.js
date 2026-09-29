@@ -179,17 +179,38 @@ var init_db = __esm({
 // src/lib/imap-sync.ts
 var imap_sync_exports = {};
 __export(imap_sync_exports, {
-  syncGmailAccount: () => syncGmailAccount
+  resolveImapProvider: () => resolveImapProvider,
+  syncGmailAccount: () => syncGmailAccount,
+  syncImapAccount: () => syncImapAccount
 });
 import { ImapFlow } from "imapflow";
 import { simpleParser } from "mailparser";
 import { eq as eq5 } from "drizzle-orm";
-async function syncGmailAccount(emailAddress, appPassword, limit = 20) {
+function resolveImapProvider(emailAddress) {
+  const domain = emailAddress.split("@")[1]?.toLowerCase() ?? "";
+  const known = PROVIDERS[domain];
+  if (known) return known;
+  const host = process.env.IMAP_HOST?.trim();
+  if (!host) {
+    throw new Error(
+      `No IMAP server known for "${domain}". Set IMAP_HOST (and optionally IMAP_PORT, IMAP_SPAM_FOLDER) to the server hosting mail for that domain \u2014 e.g. IMAP_HOST=imap.zoho.com for a domain on Zoho Mail.`
+    );
+  }
+  return {
+    host,
+    port: Number(process.env.IMAP_PORT) || 993,
+    provider: process.env.IMAP_PROVIDER?.trim() || "imap",
+    spamFolder: process.env.IMAP_SPAM_FOLDER?.trim() || "Spam"
+  };
+}
+async function syncImapAccount(emailAddress, appPassword, limit = 20) {
   const cleanEmail = emailAddress.trim().toLowerCase();
   const cleanPassword = appPassword.replace(/\s+/g, "");
+  const target = resolveImapProvider(cleanEmail);
+  const allowSelfSigned = process.env.IMAP_ALLOW_SELF_SIGNED === "true";
   const client = new ImapFlow({
-    host: "imap.gmail.com",
-    port: 993,
+    host: target.host,
+    port: target.port,
     secure: true,
     auth: {
       user: cleanEmail,
@@ -197,7 +218,7 @@ async function syncGmailAccount(emailAddress, appPassword, limit = 20) {
     },
     logger: false,
     tls: {
-      rejectUnauthorized: false
+      rejectUnauthorized: !allowSelfSigned
     },
     clientInfo: {
       name: "AetherMail",
@@ -219,14 +240,14 @@ async function syncGmailAccount(emailAddress, appPassword, limit = 20) {
     if (!existingAccount) {
       await db.insert(accounts).values({
         id: accountId,
-        provider: "google",
+        provider: target.provider,
         email_address: cleanEmail,
         sync_status: "synced",
         created_at: /* @__PURE__ */ new Date()
       });
     }
     let imported = 0;
-    const foldersToSync = ["INBOX", "[Gmail]/Spam"];
+    const foldersToSync = ["INBOX", target.spamFolder];
     for (const folderName of foldersToSync) {
       let lock;
       try {
@@ -361,10 +382,20 @@ Summary: ${snippet.slice(0, 150)}`,
     }
   }
 }
+var PROVIDERS, syncGmailAccount;
 var init_imap_sync = __esm({
   "src/lib/imap-sync.ts"() {
     init_db();
     init_schema();
+    PROVIDERS = {
+      "gmail.com": { host: "imap.gmail.com", port: 993, provider: "google", spamFolder: "[Gmail]/Spam" },
+      "googlemail.com": { host: "imap.gmail.com", port: 993, provider: "google", spamFolder: "[Gmail]/Spam" },
+      "zoho.com": { host: "imap.zoho.com", port: 993, provider: "zoho", spamFolder: "Spam" },
+      "outlook.com": { host: "outlook.office365.com", port: 993, provider: "microsoft", spamFolder: "Junk Email" },
+      "hotmail.com": { host: "outlook.office365.com", port: 993, provider: "microsoft", spamFolder: "Junk Email" },
+      "live.com": { host: "outlook.office365.com", port: 993, provider: "microsoft", spamFolder: "Junk Email" }
+    };
+    syncGmailAccount = syncImapAccount;
   }
 });
 
@@ -679,10 +710,12 @@ async function dispatchViaStalwartSmtp(params) {
 }
 
 // src/app/actions/send-email.ts
-var GMAIL_ACCOUNTS = {
-  "mraaziqp@gmail.com": process.env.GMAIL_APP_PASSWORD || "yehajpcshymlzwcq",
-  "backupe9@gmail.com": process.env.BACKUPE9_APP_PASSWORD || "scpjnpbgzbilrttj"
-};
+var GMAIL_ACCOUNTS = Object.fromEntries(
+  [
+    [process.env.GMAIL_USER, process.env.GMAIL_APP_PASSWORD],
+    [process.env.BACKUPE9_USER, process.env.BACKUPE9_APP_PASSWORD]
+  ].filter((entry) => Boolean(entry[0]?.trim() && entry[1]?.trim())).map(([user, pass]) => [user.trim().toLowerCase(), pass.trim()])
+);
 var cleanEmailList = (raw) => {
   if (!raw) return [];
   if (Array.isArray(raw)) {
@@ -732,7 +765,13 @@ async function sendEmailAction(params) {
     let dispatchError = null;
     const normalizedSender = senderAddress.toLowerCase().trim();
     if (normalizedSender.includes("@gmail.com")) {
-      const appPass = dbAppPassword || GMAIL_ACCOUNTS[normalizedSender] || process.env.GMAIL_APP_PASSWORD || "yehajpcshymlzwcq";
+      const appPass = dbAppPassword || GMAIL_ACCOUNTS[normalizedSender] || process.env.GMAIL_APP_PASSWORD;
+      if (!appPass) {
+        return {
+          success: false,
+          error: `No app password configured for ${normalizedSender}. Set GMAIL_APP_PASSWORD (or store one on the account) \u2014 nothing was sent.`
+        };
+      }
       const transporter = nodemailer2.createTransport({
         host: "smtp.gmail.com",
         port: 465,
@@ -778,8 +817,14 @@ async function sendEmailAction(params) {
         dispatchSuccess = true;
       } else {
         console.warn("[sendEmailAction] Enterprise SMTP relay failed, falling back to Google authenticated relay:", relayResult.error);
-        const relayUser = "mraaziqp@gmail.com";
-        const relayPass = GMAIL_ACCOUNTS[relayUser] || process.env.GMAIL_APP_PASSWORD || "yehajpcshymlzwcq";
+        const relayUser = (process.env.GMAIL_USER || "").trim().toLowerCase();
+        const relayPass = GMAIL_ACCOUNTS[relayUser] || process.env.GMAIL_APP_PASSWORD;
+        if (!relayUser || !relayPass) {
+          return {
+            success: false,
+            error: `Enterprise SMTP relay failed (${relayResult.error}) and no Google fallback relay is configured (GMAIL_USER / GMAIL_APP_PASSWORD). Nothing was sent.`
+          };
+        }
         const transporter = nodemailer2.createTransport({
           host: "smtp.gmail.com",
           port: 465,
@@ -2086,17 +2131,17 @@ v1Router.post("/sync/gmail", async (req, res) => {
         error: "email_address and app_password are required."
       });
     }
-    const { syncGmailAccount: syncGmailAccount2 } = await Promise.resolve().then(() => (init_imap_sync(), imap_sync_exports));
-    const result = await syncGmailAccount2(email_address, app_password, limit || 20);
+    const { syncImapAccount: syncImapAccount2 } = await Promise.resolve().then(() => (init_imap_sync(), imap_sync_exports));
+    const result = await syncImapAccount2(email_address, app_password, limit || 20);
     if (!result.success) {
       return res.status(400).json({
         success: false,
-        error: result.error || "Failed to authenticate or sync with Gmail IMAP server."
+        error: result.error || "Failed to authenticate or sync with the IMAP server."
       });
     }
     return res.json({
       success: true,
-      message: `Successfully synchronized ${result.imported} messages from Gmail inbox.`,
+      message: `Successfully synchronized ${result.imported} messages from ${email_address}.`,
       imported: result.imported,
       email_address
     });
@@ -2486,29 +2531,40 @@ Action Required: Immediate human attention flagged by Gemini 2.5 Flash.`;
     }
     isSyncInProgress = true;
     try {
-      const { syncGmailAccount: syncGmailAccount2 } = await Promise.resolve().then(() => (init_imap_sync(), imap_sync_exports));
+      const { syncImapAccount: syncImapAccount2 } = await Promise.resolve().then(() => (init_imap_sync(), imap_sync_exports));
       const allAccounts = await db.select().from(accounts);
       let totalImported = 0;
       const syncReports = [];
+      const envPasswords = /* @__PURE__ */ new Map();
+      const addEnvPassword = (user, pass) => {
+        if (user?.trim() && pass?.trim()) envPasswords.set(user.trim().toLowerCase(), pass.trim());
+      };
+      addEnvPassword(process.env.GMAIL_USER, process.env.GMAIL_APP_PASSWORD);
+      addEnvPassword(process.env.BACKUPE9_USER, process.env.BACKUPE9_APP_PASSWORD);
+      addEnvPassword(process.env.AETHERMAIL_SENDER, process.env.IMAP_PASSWORD);
       for (const acc of allAccounts) {
         let appPass = "";
         if (acc.oauth_tokens && typeof acc.oauth_tokens === "object" && "app_password" in acc.oauth_tokens) {
           appPass = String(acc.oauth_tokens.app_password);
         }
-        if (!appPass && (acc.email_address === process.env.GMAIL_USER || acc.email_address === "mraaziqp@gmail.com")) {
-          appPass = process.env.GMAIL_APP_PASSWORD || "yehajpcshymlzwcq";
-        } else if (!appPass && (acc.email_address === process.env.BACKUPE9_USER || acc.email_address === "backupe9@gmail.com")) {
-          appPass = process.env.BACKUPE9_APP_PASSWORD || "scpjnpbgzbilrttj";
+        if (!appPass) {
+          appPass = envPasswords.get(acc.email_address.trim().toLowerCase()) || "";
         }
-        if (appPass && acc.email_address.includes("@gmail.com")) {
-          try {
-            const syncResult = await syncGmailAccount2(acc.email_address, appPass, 30);
-            totalImported += syncResult.imported;
-            syncReports.push({ email: acc.email_address, imported: syncResult.imported, status: syncResult.success ? "ok" : syncResult.error || "unknown" });
-          } catch (syncErr) {
-            console.warn(`[Sync] Error syncing ${acc.email_address}:`, syncErr);
-            syncReports.push({ email: acc.email_address, imported: 0, status: "error" });
-          }
+        if (!appPass) {
+          syncReports.push({ email: acc.email_address, imported: 0, status: "no credentials" });
+          continue;
+        }
+        try {
+          const syncResult = await syncImapAccount2(acc.email_address, appPass, 30);
+          totalImported += syncResult.imported;
+          syncReports.push({ email: acc.email_address, imported: syncResult.imported, status: syncResult.success ? "ok" : syncResult.error || "unknown" });
+        } catch (syncErr) {
+          console.warn(`[Sync] Error syncing ${acc.email_address}:`, syncErr);
+          syncReports.push({
+            email: acc.email_address,
+            imported: 0,
+            status: syncErr instanceof Error ? syncErr.message : "error"
+          });
         }
       }
       res.json({
