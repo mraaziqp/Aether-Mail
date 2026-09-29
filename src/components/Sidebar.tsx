@@ -1,544 +1,178 @@
-import React, { useState } from 'react';
-import { 
-  Inbox, 
-  AlertTriangle, 
-  Briefcase, 
-  DollarSign, 
-  User, 
-  Mail, 
-  Bot, 
-  Plus, 
-  RefreshCw, 
-  Sparkles, 
-  Send,
-  Database,
-  Radio,
-  Terminal,
-  ChevronLeft,
-  ChevronRight,
-  ShieldAlert,
-  Activity,
-  CheckCircle2,
-  LogOut,
-  Palette,
-  ShieldCheck
+import React from 'react';
+import {
+  Inbox, Send, AlertOctagon, ShieldAlert, MailOpen, PenSquare, Plus, Layers, Terminal, Palette, LogOut,
+  ChevronsLeft, ChevronsRight, Activity,
 } from 'lucide-react';
-import type { Account, EmailCategory, EmailItem } from '../types.ts';
+import type { Account, StatusPayload, SessionUser } from '../types.ts';
+import { CATEGORY_META, relativeTime } from './ui.tsx';
+
+export type Folder = 'inbox' | 'unread' | 'alerts' | 'sent' | 'spam' | `cat:${string}`;
 
 interface SidebarProps {
+  status: StatusPayload | null;
   accounts: Account[];
-  emails: EmailItem[];
   selectedAccountId: string;
-  selectedCategory: string;
-  alertFilterOnly: boolean;
-  onSelectAccount: (accountId: string) => void;
-  onSelectCategory: (category: string) => void;
-  onToggleAlertFilter: () => void;
-  onOpenComposeModal?: () => void;
-  onOpenWebhookModal: () => void;
-  onOpenAccountModal: () => void;
-  onOpenDeveloperModal: () => void;
-  onRefresh: () => void;
-  onSeedData: () => void;
-  loading: boolean;
-  isCollapsed?: boolean;
-  onToggleCollapse?: () => void;
-  currentView?: 'feed' | 'developer';
-  onSelectView?: (view: 'feed' | 'developer') => void;
-  onLogout?: () => void;
-  onOpenProfileModal?: () => void;
-  currentTheme?: string;
-  onOpenThemeModal?: () => void;
+  folder: Folder;
+  collapsed: boolean;
+  user: SessionUser | null;
+  now: number;
+  onToggleCollapse: () => void;
+  onSelectAccount: (id: string) => void;
+  onSelectFolder: (f: Folder) => void;
+  onCompose: () => void;
+  onConnect: () => void;
+  onOpenHealth: () => void;
+  onOpenDeveloper: () => void;
+  onOpenTheme: () => void;
+  onLogout: () => void;
+  /** Rendered inside the mobile drawer. */
+  mobile?: boolean;
 }
 
-const CATEGORIES: { 
-  id: string; 
-  label: string; 
-  icon: React.ComponentType<{ className?: string }>; 
-  categoryKey?: EmailCategory;
-  accentColor: string;
-}[] = [
-  { id: 'all', label: 'All Inboxes', icon: Inbox, accentColor: 'text-zinc-300' },
-  { id: 'urgent', label: 'Urgent Action', icon: AlertTriangle, categoryKey: 'urgent', accentColor: 'text-rose-400' },
-  { id: 'work', label: 'Work & Projects', icon: Briefcase, categoryKey: 'work', accentColor: 'text-blue-400' },
-  { id: 'financial', label: 'Financial & Invoices', icon: DollarSign, categoryKey: 'financial', accentColor: 'text-amber-400' },
-  { id: 'personal', label: 'Personal', icon: User, categoryKey: 'personal', accentColor: 'text-emerald-400' },
-  { id: 'newsletter', label: 'Newsletters', icon: Mail, categoryKey: 'newsletter', accentColor: 'text-purple-400' },
-  { id: 'automated', label: 'Automated & System', icon: Bot, categoryKey: 'automated', accentColor: 'text-cyan-400' },
-];
+export function accountHealth(a: Account, now = Date.now()): { tone: string; label: string } {
+  if (a.sync_status === 'error' || a.last_sync_error) return { tone: 'bg-rose-400', label: a.last_sync_error || 'Sync error' };
+  if (a.sync_status === 'syncing') return { tone: 'bg-cyan-400 animate-pulse', label: 'Syncing now' };
+  if (!a.settings?.has_password && a.provider !== 'resend') return { tone: 'bg-amber-400', label: 'No password saved — reconnect to sync' };
+  if (!a.last_synced_at) return { tone: a.provider === 'resend' ? 'bg-emerald-400' : 'bg-zinc-500', label: a.provider === 'resend' ? 'Receives via Resend webhook' : 'Not synced yet' };
+  const age = now - new Date(a.last_synced_at).getTime();
+  if (age > 15 * 60_000) return { tone: 'bg-amber-400', label: `Last synced ${relativeTime(a.last_synced_at, now)}` };
+  return { tone: 'bg-emerald-400', label: `Synced ${relativeTime(a.last_synced_at, now)}` };
+}
 
-export const Sidebar: React.FC<SidebarProps> = ({
-  accounts,
-  emails,
-  selectedAccountId,
-  selectedCategory,
-  alertFilterOnly,
-  onSelectAccount,
-  onSelectCategory,
-  onToggleAlertFilter,
-  onOpenComposeModal,
-  onOpenWebhookModal,
-  onOpenAccountModal,
-  onOpenDeveloperModal,
-  onRefresh,
-  onSeedData,
-  loading,
-  isCollapsed = false,
-  onToggleCollapse,
-  currentView = 'feed',
-  onSelectView,
-  onLogout,
-  onOpenProfileModal,
-  currentTheme = 'obsidian',
-  onOpenThemeModal,
-}) => {
-  const alertCount = emails.filter((e) => e.requires_alert && !e.is_read).length;
-  const unreadCount = emails.filter((e) => !e.is_read).length;
+interface NavItemProps {
+  icon: React.ReactNode; label: string; count?: number; active: boolean; collapsed: boolean; onClick: () => void; accent?: string;
+}
 
-  const getCategoryCount = (catId: string) => {
-    if (catId === 'all') return unreadCount;
-    return emails.filter((e) => e.category === catId && !e.is_read).length;
-  };
+const NavItem: React.FC<NavItemProps> = ({ icon, label, count, active, collapsed, onClick, accent }) => {
+  return (
+    <button
+      onClick={onClick}
+      title={collapsed ? label : undefined}
+      className={`group w-full flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm transition relative ${
+        active ? 'bg-[#161a24] text-zinc-50 border border-[#232838]' : 'text-zinc-400 hover:text-zinc-100 hover:bg-[#12151d] border border-transparent'
+      } ${collapsed ? 'justify-center px-0' : ''}`}
+    >
+      {active && <span className="absolute left-0 top-2 bottom-2 w-0.5 rounded-full bg-cyan-400" />}
+      <span className={`flex-shrink-0 ${active ? accent ?? 'text-cyan-300' : ''}`}>{icon}</span>
+      {!collapsed && <span className="flex-1 text-left truncate">{label}</span>}
+      {!collapsed && !!count && (
+        <span className={`text-[11px] font-mono px-1.5 py-0.5 rounded-md ${active ? 'bg-cyan-500/15 text-cyan-200' : 'bg-[#1a1d27] text-zinc-400'}`}>{count}</span>
+      )}
+      {collapsed && !!count && <span className="absolute top-1.5 right-2 w-1.5 h-1.5 rounded-full bg-cyan-400" />}
+    </button>
+  );
+};
 
-  const getAccountUnread = (accId: string) => {
-    return emails.filter((e) => e.account_id === accId && !e.is_read).length;
-  };
+export function Sidebar(props: SidebarProps) {
+  const { status, accounts, selectedAccountId, folder, now } = props;
+  const collapsed = props.mobile ? false : props.collapsed;
+  const cat = (k: string) => status?.categories.find((c) => c.category === k);
+  const totalUnread = accounts.reduce((n, a) => n + (a.unread ?? 0), 0);
+  const selectedUnread = selectedAccountId === 'all' ? totalUnread : accounts.find((a) => a.id === selectedAccountId)?.unread ?? 0;
+  const anyError = accounts.some((a) => a.sync_status === 'error' || a.last_sync_error);
 
   return (
-    <aside 
-      id="command-sidebar"
-      className={`${
-        isCollapsed ? 'w-16' : 'w-56 lg:w-60 xl:w-64'
-      } bg-[#0c0e14] border-r border-[#1a1d27] flex flex-col h-full select-none text-zinc-300 transition-all duration-200 flex-shrink-0 relative z-10`}
-    >
-      {/* Brand Header */}
-      <div className="p-3.5 border-b border-[#1a1d27] bg-[#11131a] flex items-center justify-between">
-        {!isCollapsed ? (
-          <div className="flex items-center space-x-2.5 min-w-0">
-            <div className="w-8 h-8 rounded-lg bg-[#1a1d27] border border-[#262b3a] flex items-center justify-center text-amber-400 shadow-sm flex-shrink-0">
-              <Sparkles className="w-4 h-4" />
-            </div>
-            <div className="min-w-0">
-              <h1 className="text-xs font-semibold text-zinc-100 tracking-tight flex items-center gap-1.5 truncate">
-                <span>AetherMail</span>
-                <span className="text-[9px] uppercase font-mono px-1 py-0.2 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20">
-                  OBSIDIAN
-                </span>
-              </h1>
-              <div className="flex items-center gap-1 text-[10px] text-zinc-500 font-mono">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                <span>POSTGRES + GEMINI</span>
-              </div>
-            </div>
-          </div>
-        ) : (
-          <div className="w-8 h-8 rounded-lg bg-[#1a1d27] border border-[#262b3a] flex items-center justify-center text-amber-400 mx-auto shadow-sm">
-            <Sparkles className="w-4 h-4" />
-          </div>
-        )}
-
-        {onToggleCollapse && (
-          <button
-            onClick={onToggleCollapse}
-            title={isCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-            className="p-1 rounded-md hover:bg-[#1a1d27] text-zinc-400 hover:text-zinc-200 transition-colors"
-          >
-            {isCollapsed ? <ChevronRight className="w-4 h-4" /> : <ChevronLeft className="w-4 h-4" />}
-          </button>
-        )}
-      </div>
-
-      {/* Real-time Sync Heartbeat Badge */}
-      {!isCollapsed && (
-        <div className="px-3 pt-3 pb-1">
-          <div className="px-2.5 py-1.5 rounded-lg bg-[#11131a] border border-[#1a1d27] flex items-center justify-between text-[10px]">
-            <div className="flex items-center space-x-2">
-              <span className="relative flex h-2 w-2">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
-              </span>
-              <span className="font-mono text-zinc-300 font-medium tracking-wide">SYNC: ONLINE</span>
-            </div>
-            <span className="font-mono text-emerald-400 text-[9px] bg-emerald-500/10 px-1.5 py-0.5 rounded border border-emerald-500/20">
-              0.02s LATENCY
-            </span>
-          </div>
-        </div>
-      )}
-
-      {/* Quick Compose Dispatch Button */}
-      <div className="px-3 pt-2 pb-1">
+    <aside className={`${props.mobile ? 'flex' : 'hidden md:flex'} flex-col h-full border-r border-[#161922] bg-[#0b0d12]/80 backdrop-blur transition-[width] duration-200 ${collapsed ? 'w-[76px]' : 'w-[280px]'}`}>
+      <div className={`flex items-center gap-2 p-4 ${collapsed ? 'flex-col' : ''}`}>
         <button
-          onClick={onOpenComposeModal}
-          title="Compose New Dispatch"
-          className={`w-full flex items-center ${
-            isCollapsed ? 'justify-center p-2' : 'justify-center space-x-2 px-3 py-2'
-          } bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-zinc-950 font-bold rounded-lg text-xs shadow-md transition-all active:scale-[0.98]`}
+          onClick={props.onCompose}
+          className={`flex-1 inline-flex items-center justify-center gap-2 rounded-xl py-3 text-sm font-semibold text-zinc-950 bg-gradient-to-r from-cyan-400 to-sky-400 hover:from-cyan-300 hover:to-sky-300 shadow-[0_10px_30px_-10px_rgba(34,211,238,0.7)] transition ${collapsed ? 'w-11 h-11 flex-none p-0' : 'px-4'}`}
+          title="Compose (c)"
         >
-          <Send className="w-3.5 h-3.5 flex-shrink-0" />
-          {!isCollapsed && <span>Compose Dispatch</span>}
+          <PenSquare className="w-4 h-4" />
+          {!collapsed && 'Compose'}
+        </button>
+        <button onClick={props.onToggleCollapse} className="w-10 h-10 flex items-center justify-center rounded-xl text-zinc-500 hover:text-zinc-200 hover:bg-[#161a24]" title={collapsed ? 'Expand' : 'Collapse'}>
+          {collapsed ? <ChevronsRight className="w-4 h-4" /> : <ChevronsLeft className="w-4 h-4" />}
         </button>
       </div>
 
-      {/* Alert Priority Filter Banner */}
-      <div className="p-3">
-        <button
-          onClick={onToggleAlertFilter}
-          title="Filter Urgent Attention"
-          className={`w-full flex items-center ${
-            isCollapsed ? 'justify-center py-2.5' : 'justify-between px-3 py-2'
-          } rounded-lg text-xs font-medium border transition-all ${
-            alertFilterOnly
-              ? 'bg-rose-950/60 border-rose-700/80 text-rose-200 shadow-sm'
-              : 'bg-[#11131a] border-[#1a1d27] text-zinc-300 hover:border-rose-900/50 hover:bg-rose-950/20'
-          }`}
-        >
-          <div className="flex items-center space-x-2">
-            <span className="relative flex h-2.5 w-2.5 flex-shrink-0">
-              {alertCount > 0 && (
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-rose-400 opacity-75"></span>
-              )}
-              <span className={`relative inline-flex rounded-full h-2.5 w-2.5 ${alertCount > 0 ? 'bg-rose-500' : 'bg-zinc-600'}`}></span>
-            </span>
-            {!isCollapsed && <span className="font-medium">Needs Attention</span>}
-          </div>
-          {!isCollapsed && alertCount > 0 && (
-            <span className="px-1.5 py-0.2 text-[10px] font-bold font-mono rounded bg-rose-900/80 text-rose-300 border border-rose-700/60">
-              {alertCount}
-            </span>
-          )}
-        </button>
-      </div>
-
-      {/* Smart Categories */}
-      <div className="px-2 py-1 flex-1 overflow-y-auto space-y-4">
-        <div>
-          {!isCollapsed && (
-            <div className="px-2 pb-1.5 text-[10px] font-semibold tracking-wider text-zinc-400 uppercase font-mono">
-              Smart Categories
-            </div>
-          )}
-          <nav className="space-y-0.5">
-            {CATEGORIES.map((cat) => {
-              const Icon = cat.icon;
-              const isActive = selectedCategory === cat.id && !alertFilterOnly;
-              const count = getCategoryCount(cat.id);
-              const isUrgent = cat.id === 'urgent';
-
-              return (
-                <button
-                  key={cat.id}
-                  onClick={() => {
-                    if (alertFilterOnly) onToggleAlertFilter();
-                    onSelectCategory(cat.id);
-                  }}
-                  title={isCollapsed ? `${cat.label} (${count})` : undefined}
-                  className={`w-full flex items-center ${
-                    isCollapsed ? 'justify-center p-2' : 'justify-between px-2.5 py-1.5'
-                  } rounded-lg text-xs font-medium transition-all ${
-                    isActive
-                      ? 'bg-[#1c202d] text-zinc-100 border border-[#2b3247] shadow-sm'
-                      : 'text-zinc-400 hover:bg-[#151821] hover:text-zinc-200 border border-transparent'
-                  }`}
-                >
-                  <div className="flex items-center space-x-2.5 truncate">
-                    <Icon className={`w-4 h-4 flex-shrink-0 ${cat.accentColor}`} />
-                    {!isCollapsed && <span className="truncate">{cat.label}</span>}
-                  </div>
-                  {!isCollapsed && count > 0 && (
-                    <span className={`text-[10px] px-1.5 py-0.2 rounded font-mono ${
-                      isUrgent 
-                        ? 'bg-rose-950/80 text-rose-300 border border-rose-800/60 font-bold' 
-                        : 'bg-[#151821] text-zinc-300 border border-[#262b3a]'
-                    }`}>
-                      {count}
-                    </span>
-                  )}
-                </button>
-              );
-            })}
-          </nav>
+      <nav className="flex-1 overflow-y-auto px-3 pb-4 space-y-6">
+        <div className="space-y-1">
+          <NavItem icon={<Inbox className="w-[18px] h-[18px]" />} label="Inbox" count={selectedUnread} active={folder === 'inbox'} collapsed={collapsed} onClick={() => props.onSelectFolder('inbox')} />
+          <NavItem icon={<MailOpen className="w-[18px] h-[18px]" />} label="Unread" active={folder === 'unread'} collapsed={collapsed} onClick={() => props.onSelectFolder('unread')} />
+          <NavItem icon={<AlertOctagon className="w-[18px] h-[18px]" />} label="Needs action" count={status?.alertCount} accent="text-amber-300" active={folder === 'alerts'} collapsed={collapsed} onClick={() => props.onSelectFolder('alerts')} />
+          <NavItem icon={<Send className="w-[18px] h-[18px]" />} label="Sent" active={folder === 'sent'} collapsed={collapsed} onClick={() => props.onSelectFolder('sent')} />
+          <NavItem icon={<ShieldAlert className="w-[18px] h-[18px]" />} label="Spam" count={cat('spam')?.unread} accent="text-orange-300" active={folder === 'spam'} collapsed={collapsed} onClick={() => props.onSelectFolder('spam')} />
         </div>
 
-        {/* Connected Accounts */}
         <div>
-          {!isCollapsed && (
-            <div className="px-2 pb-1.5 flex items-center justify-between text-[10px] font-semibold tracking-wider text-zinc-400 uppercase font-mono">
-              <span>Mail Profiles</span>
-              <button
-                onClick={onOpenAccountModal}
-                title="Connect New Account"
-                className="text-zinc-400 hover:text-zinc-200 transition-colors"
-              >
+          {!collapsed && (
+            <div className="flex items-center justify-between px-3 mb-2">
+              <span className="text-[11px] font-mono uppercase tracking-[0.14em] text-zinc-500">Mailboxes</span>
+              <button onClick={props.onConnect} className="p-1 rounded-md text-zinc-500 hover:text-cyan-300 hover:bg-[#161a24]" title="Connect mailbox">
                 <Plus className="w-3.5 h-3.5" />
               </button>
             </div>
           )}
-
-          <div className="space-y-0.5">
-            <button
-              onClick={() => onSelectAccount('all')}
-              title={isCollapsed ? 'All Accounts' : undefined}
-              className={`w-full flex items-center ${
-                isCollapsed ? 'justify-center p-2' : 'justify-between px-2.5 py-1.5'
-              } rounded-lg text-xs transition-colors ${
-                selectedAccountId === 'all'
-                  ? 'bg-[#1c202d] text-zinc-100 font-medium border border-[#2b3247]'
-                  : 'text-zinc-400 hover:bg-[#151821] hover:text-zinc-200 border border-transparent'
-              }`}
-            >
-              <div className="flex items-center space-x-2 truncate">
-                <Radio className="w-3.5 h-3.5 text-zinc-400 flex-shrink-0" />
-                {!isCollapsed && <span className="truncate text-xs font-medium">All Inboxes (Unified)</span>}
-              </div>
-              {!isCollapsed && (
-                <span className="text-[10px] text-zinc-400 font-mono px-1 py-0.2 rounded bg-[#11131a]">
-                  {accounts.length}
-                </span>
-              )}
-            </button>
-
-            {/* Section 1: Business Accounts */}
-            {!isCollapsed && accounts.some((a) => a.email_address.includes('arpcloudsolutions.co.za')) && (
-              <div className="pt-2 pb-1 px-2 text-[9px] font-mono text-emerald-400 uppercase tracking-wider flex items-center gap-1.5">
-                <span>🏢 ARP Cloud Solutions</span>
-              </div>
+          <div className="space-y-1">
+            <NavItem icon={<Layers className="w-[18px] h-[18px]" />} label="All mailboxes" count={totalUnread} active={selectedAccountId === 'all'} collapsed={collapsed} onClick={() => props.onSelectAccount('all')} />
+            {accounts.map((a) => {
+              const h = accountHealth(a, now);
+              const active = selectedAccountId === a.id;
+              return (
+                <button
+                  key={a.id}
+                  onClick={() => props.onSelectAccount(a.id)}
+                  title={`${a.email_address}\n${h.label}`}
+                  className={`w-full flex items-center gap-3 rounded-xl px-3 py-2.5 text-left transition border ${
+                    active ? 'bg-[#161a24] border-[#232838]' : 'border-transparent hover:bg-[#12151d]'
+                  } ${collapsed ? 'justify-center px-0' : ''}`}
+                >
+                  <span className="relative flex-shrink-0">
+                    <span className={`w-8 h-8 rounded-lg flex items-center justify-center text-xs font-semibold border border-white/5 ${active ? 'bg-cyan-500/15 text-cyan-200' : 'bg-[#141821] text-zinc-300'}`}>
+                      {a.email_address[0]?.toUpperCase()}
+                    </span>
+                    <span className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full ring-2 ring-[#0b0d12] ${h.tone}`} />
+                  </span>
+                  {!collapsed && (
+                    <span className="flex-1 min-w-0">
+                      <span className={`block text-[13px] truncate ${active ? 'text-zinc-50' : 'text-zinc-300'}`}>{a.display_name || a.email_address.split('@')[0]}</span>
+                      <span className="block text-[11px] text-zinc-500 truncate">{a.email_address}</span>
+                    </span>
+                  )}
+                  {!collapsed && !!a.unread && <span className="text-[11px] font-mono text-zinc-400">{a.unread}</span>}
+                </button>
+              );
+            })}
+            {!collapsed && accounts.length === 0 && (
+              <button onClick={props.onConnect} className="w-full rounded-xl border border-dashed border-[#262b3a] px-3 py-4 text-sm text-zinc-400 hover:text-cyan-200 hover:border-cyan-500/40 transition">
+                Connect your first mailbox
+              </button>
             )}
-            {accounts
-              .filter((a) => a.email_address.includes('arpcloudsolutions.co.za') && !a.email_address.includes('jarvis'))
-              .map((acc) => {
-                const isActive = selectedAccountId === acc.id;
-                const unread = getAccountUnread(acc.id);
-
-                return (
-                  <button
-                    key={acc.id}
-                    onClick={() => onSelectAccount(acc.id)}
-                    title={isCollapsed ? acc.email_address : undefined}
-                    className={`w-full flex items-center ${
-                      isCollapsed ? 'justify-center p-2' : 'justify-between px-2.5 py-1.5'
-                    } rounded-lg text-xs transition-colors ${
-                      isActive
-                        ? 'bg-emerald-950/40 text-emerald-200 font-medium border border-emerald-500/40'
-                        : 'text-zinc-400 hover:bg-[#151821] hover:text-zinc-200 border border-transparent'
-                    }`}
-                  >
-                    <div className="flex items-center space-x-2 truncate">
-                      <div className="w-2 h-2 rounded-full bg-emerald-400 flex-shrink-0" />
-                      {!isCollapsed && (
-                        <span className="truncate text-[11px] font-mono text-zinc-200">
-                          {acc.email_address}
-                        </span>
-                      )}
-                    </div>
-                    {!isCollapsed && unread > 0 && (
-                      <span className="text-[9px] px-1 py-0.2 rounded bg-emerald-950 text-emerald-300 font-mono border border-emerald-800">
-                        {unread}
-                      </span>
-                    )}
-                  </button>
-                );
-              })}
-
-            {/* Section 2: Google Personal Accounts */}
-            {!isCollapsed && accounts.some((a) => a.email_address.includes('@gmail.com')) && (
-              <div className="pt-2 pb-1 px-2 text-[9px] font-mono text-blue-400 uppercase tracking-wider flex items-center gap-1.5">
-                <span>📬 Google Accounts</span>
-              </div>
-            )}
-            {accounts
-              .filter((a) => a.email_address.includes('@gmail.com'))
-              .map((acc) => {
-                const isActive = selectedAccountId === acc.id;
-                const unread = getAccountUnread(acc.id);
-
-                return (
-                  <button
-                    key={acc.id}
-                    onClick={() => onSelectAccount(acc.id)}
-                    title={isCollapsed ? acc.email_address : undefined}
-                    className={`w-full flex items-center ${
-                      isCollapsed ? 'justify-center p-2' : 'justify-between px-2.5 py-1.5'
-                    } rounded-lg text-xs transition-colors ${
-                      isActive
-                        ? 'bg-blue-950/40 text-blue-200 font-medium border border-blue-500/40'
-                        : 'text-zinc-400 hover:bg-[#151821] hover:text-zinc-200 border border-transparent'
-                    }`}
-                  >
-                    <div className="flex items-center space-x-2 truncate">
-                      <div className="w-2 h-2 rounded-full bg-blue-400 flex-shrink-0" />
-                      {!isCollapsed && (
-                        <span className="truncate text-[11px] font-mono text-zinc-200">
-                          {acc.email_address}
-                        </span>
-                      )}
-                    </div>
-                    {!isCollapsed && unread > 0 && (
-                      <span className="text-[9px] px-1 py-0.2 rounded bg-blue-950 text-blue-300 font-mono border border-blue-800">
-                        {unread}
-                      </span>
-                    )}
-                  </button>
-                );
-              })}
-
-            {/* Section 3: Jarvis & Agent Identities */}
-            {!isCollapsed && accounts.some((a) => a.email_address.includes('jarvis')) && (
-              <div className="pt-2 pb-1 px-2 text-[9px] font-mono text-amber-400 uppercase tracking-wider flex items-center gap-1.5">
-                <span>🤖 Autonomous Agents</span>
-              </div>
-            )}
-            {accounts
-              .filter((a) => a.email_address.includes('jarvis'))
-              .map((acc) => {
-                const isActive = selectedAccountId === acc.id;
-                const unread = getAccountUnread(acc.id);
-
-                return (
-                  <button
-                    key={acc.id}
-                    onClick={() => onSelectAccount(acc.id)}
-                    title={isCollapsed ? acc.email_address : undefined}
-                    className={`w-full flex items-center ${
-                      isCollapsed ? 'justify-center p-2' : 'justify-between px-2.5 py-1.5'
-                    } rounded-lg text-xs transition-colors ${
-                      isActive
-                        ? 'bg-amber-950/40 text-amber-200 font-medium border border-amber-500/40'
-                        : 'text-zinc-400 hover:bg-[#151821] hover:text-zinc-200 border border-transparent'
-                    }`}
-                  >
-                    <div className="flex items-center space-x-2 truncate">
-                      <Bot className="w-3.5 h-3.5 text-amber-400 flex-shrink-0" />
-                      {!isCollapsed && (
-                        <span className="truncate text-[11px] font-mono text-amber-300">
-                          {acc.email_address}
-                        </span>
-                      )}
-                    </div>
-                    {!isCollapsed && unread > 0 && (
-                      <span className="text-[9px] px-1 py-0.2 rounded bg-amber-950 text-amber-300 font-mono border border-amber-800">
-                        {unread}
-                      </span>
-                    )}
-                  </button>
-                );
-              })}
           </div>
         </div>
-      </div>
 
-      {/* Command Actions Footer */}
-      <div className="p-3 border-t border-[#1a1d27] space-y-2 bg-[#090a0f]">
-        {/* Developer & Bot Engine Button */}
-        <button
-          onClick={() => {
-            if (onSelectView) {
-              onSelectView(currentView === 'developer' ? 'feed' : 'developer');
-            } else {
-              onOpenDeveloperModal();
-            }
-          }}
-          title="Developer & Bot REST API (Root Access)"
-          className={`w-full flex items-center ${
-            isCollapsed ? 'justify-center p-2' : 'space-x-2 px-3 py-2.5'
-          } rounded-xl text-xs font-medium transition-all ${
-            currentView === 'developer'
-              ? 'bg-amber-500 text-black font-extrabold border border-amber-400 shadow-md ring-1 ring-amber-400/40'
-              : 'bg-[#141824] hover:bg-[#1a2133] text-amber-300 border border-amber-500/40 hover:border-amber-400/60'
-          }`}
-        >
-          <Terminal className="w-4 h-4 flex-shrink-0" />
-          {!isCollapsed && (
-            <span className="flex items-center justify-between w-full font-mono text-[11px]">
-              <span className="font-bold">⚡ Admin Dashboard</span>
-              <span className={`text-[9px] px-1.5 py-0.5 rounded font-mono font-bold ${
-                currentView === 'developer' ? 'bg-black text-amber-400' : 'bg-amber-500/20 text-amber-300'
-              }`}>
-                NOC ROOT
-              </span>
-            </span>
-          )}
-        </button>
-
-        {/* Theme Manager Button */}
-        {onOpenThemeModal && !isCollapsed && (
-          <button
-            onClick={onOpenThemeModal}
-            className="w-full flex items-center justify-between px-3 py-2 rounded-xl bg-[#11131a] hover:bg-[#151821] text-zinc-300 hover:text-zinc-100 border border-[#1a1d27] text-[11px] font-mono transition-all"
-            title="Open Theme Manager"
-          >
-            <div className="flex items-center space-x-2">
-              <Palette className="w-3.5 h-3.5 text-amber-400" />
-              <span>Theme Style</span>
-            </div>
-            <span className="text-[10px] text-zinc-400 capitalize px-1.5 py-0.2 rounded bg-[#090a0f] border border-[#1a1d27]">
-              {currentTheme}
-            </span>
-          </button>
-        )}
-
-        {/* Simulate Webhook */}
-        {!isCollapsed && (
-          <button
-            onClick={onOpenWebhookModal}
-            className="w-full flex items-center justify-center space-x-2 px-3 py-1.5 rounded-lg bg-[#11131a] hover:bg-[#151821] text-zinc-300 hover:text-zinc-100 border border-[#1a1d27] text-[11px] transition-all"
-          >
-            <Send className="w-3 h-3 text-amber-400" />
-            <span>Simulate Ingestion</span>
-          </button>
-        )}
-
-        {/* Seed button */}
-        {!isCollapsed && (
-          <button
-            onClick={onSeedData}
-            disabled={loading}
-            className="w-full flex items-center justify-center space-x-1.5 px-3 py-1 rounded-md bg-[#0e1017] hover:bg-[#151821] text-zinc-400 hover:text-zinc-300 border border-[#1a1d27] text-[10px] font-mono transition-all disabled:opacity-50"
-          >
-            <Database className="w-2.5 h-2.5" />
-            <span>Reset Demo Data</span>
-          </button>
-        )}
-
-        {/* User Profile & Logout section */}
-        <div className="pt-2 border-t border-[#1a1d27]/80 flex items-center justify-between">
-          <button
-            onClick={onOpenProfileModal}
-            className={`flex items-center ${isCollapsed ? 'justify-center w-full' : 'space-x-2 text-left'} hover:opacity-90 transition-opacity flex-1 min-w-0`}
-            title="Manage Profile & Identity"
-          >
-            <div className="w-6 h-6 rounded-full bg-gradient-to-tr from-amber-500 to-amber-300 flex items-center justify-center text-black font-extrabold text-[10px] flex-shrink-0 shadow-sm">
-              M
-            </div>
-            {!isCollapsed && (
-              <div className="flex-1 min-w-0">
-                <div className="text-[11px] font-semibold text-zinc-200 truncate">mraaziqp</div>
-                <div className="text-[9px] font-mono text-emerald-400 font-bold">SUPER ADMIN</div>
-              </div>
-            )}
-          </button>
-          {!isCollapsed && onLogout && (
-            <button
-              onClick={onLogout}
-              title="Secure Logout"
-              className="p-1 rounded text-zinc-500 hover:text-rose-400 hover:bg-rose-950/20 transition-colors"
-            >
-              <LogOut className="w-3.5 h-3.5" />
-            </button>
-          )}
-        </div>
-
-        {/* Cloud SQL connection status */}
-        {!isCollapsed && (
-          <div className="pt-1 px-1 flex items-center justify-between text-[10px] text-zinc-500 font-mono">
-            <span>Cloud SQL PostgreSQL</span>
-            <span className="inline-flex items-center gap-1 text-emerald-400">
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-              Connected
-            </span>
+        <div>
+          {!collapsed && <div className="px-3 mb-2 text-[11px] font-mono uppercase tracking-[0.14em] text-zinc-500">Smart labels</div>}
+          <div className="space-y-1">
+            {(['urgent', 'financial', 'work', 'personal', 'newsletter', 'automated'] as const).map((k) => (
+              <NavItem
+                key={k}
+                icon={<span className={`block w-2.5 h-2.5 rounded-full ${CATEGORY_META[k].dot}`} />}
+                label={CATEGORY_META[k].label}
+                count={cat(k)?.unread}
+                active={folder === `cat:${k}`}
+                collapsed={collapsed}
+                onClick={() => props.onSelectFolder(`cat:${k}`)}
+              />
+            ))}
           </div>
-        )}
+        </div>
+      </nav>
+
+      <div className="border-t border-[#161922] p-3 space-y-1">
+        <NavItem
+          icon={<Activity className={`w-[18px] h-[18px] ${anyError ? 'text-rose-400' : 'text-emerald-400'}`} />}
+          label={anyError ? 'Sync issues' : 'Sync health'}
+          active={false}
+          collapsed={collapsed}
+          onClick={props.onOpenHealth}
+        />
+        <NavItem icon={<Terminal className="w-[18px] h-[18px]" />} label="Developer & API" active={false} collapsed={collapsed} onClick={props.onOpenDeveloper} />
+        <NavItem icon={<Palette className="w-[18px] h-[18px]" />} label="Theme" active={false} collapsed={collapsed} onClick={props.onOpenTheme} />
+        <NavItem icon={<LogOut className="w-[18px] h-[18px]" />} label={props.user ? `Sign out ${props.user.username}` : 'Sign out'} active={false} collapsed={collapsed} onClick={props.onLogout} />
       </div>
     </aside>
   );
-};
+}

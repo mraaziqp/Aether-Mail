@@ -1,12 +1,19 @@
-export type EmailCategory = 'urgent' | 'personal' | 'newsletter' | 'automated' | 'work' | 'financial';
+export type EmailCategory = 'urgent' | 'personal' | 'newsletter' | 'automated' | 'work' | 'financial' | 'spam';
 
 export interface Account {
   id: string;
   provider: 'google' | 'outlook' | 'custom' | string;
   email_address: string;
-  oauth_tokens?: Record<string, unknown> | null;
+  display_name?: string | null;
   sync_status: 'synced' | 'syncing' | 'error' | string;
   created_at?: string;
+  last_synced_at?: string | null;
+  last_sync_error?: string | null;
+  settings?: { imap_host: string | null; imap_port: number | null; smtp_host: string | null; has_password: boolean };
+  /** From /api/status */
+  total?: number;
+  unread?: number;
+  latest?: string | null;
 }
 
 export interface EmailItem {
@@ -16,13 +23,50 @@ export interface EmailItem {
   subject: string;
   sender: string;
   body_snippet: string;
-  full_body: string;
+  /** Only present once the message has been opened (fetched per message). */
+  full_body?: string;
   category: EmailCategory;
   ai_summary: string;
   requires_alert: boolean;
   is_read: boolean;
   received_at: string;
   account_email?: string;
+  recipients?: string | null;
+  direction?: 'inbound' | 'outbound' | string;
+  folder?: string | null;
+  has_attachments?: boolean;
+  message_id?: string | null;
+}
+
+export interface Capabilities {
+  resend: boolean;
+  resendInbound: boolean;
+  smtpRelay: boolean;
+  gmailRelay: boolean;
+  ai: boolean;
+  push: boolean;
+  credentialVault: boolean;
+  backgroundSync: boolean;
+  serverless: boolean;
+  defaultSender: string | null;
+}
+
+export interface StatusPayload {
+  serverTime: string;
+  latestEmailId: string | null;
+  latestEmailAt: string | null;
+  alertCount: number;
+  categories: Array<{ category: string; unread: number; total: number }>;
+  accounts: Account[];
+  capabilities: Capabilities;
+}
+
+export interface SessionUser {
+  username: string;
+  displayName: string;
+  role: string;
+  primaryEmail: string;
+  domain: string;
 }
 
 export interface WebhookEmailPayload {

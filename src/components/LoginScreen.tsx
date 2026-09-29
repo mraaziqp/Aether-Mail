@@ -1,199 +1,98 @@
-import React, { useState } from 'react';
-import { Shield, Lock, User, Eye, EyeOff, ArrowRight, Sparkles, Key, CheckCircle2 } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { Lock, Mail, ShieldCheck, AlertTriangle, ArrowRight, Loader2 } from 'lucide-react';
+import { api, ApiError } from '../client/api.ts';
+import type { SessionUser } from '../types.ts';
+import { buttonPrimary, inputClass } from './ui.tsx';
 
-interface LoginScreenProps {
-  onLoginSuccess: (user: {
-    username: string;
-    displayName: string;
-    role: string;
-    primaryEmail: string;
-  }) => void;
-}
-
-export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
-  const [username, setUsername] = useState('mraaziqp');
-  const [password, setPassword] = useState('114477');
-  const [showPassword, setShowPassword] = useState(false);
-  const [loading, setLoading] = useState(false);
+export function LoginScreen({ onLoginSuccess }: { onLoginSuccess: (user: SessionUser) => void }) {
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [configured, setConfigured] = useState(true);
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  useEffect(() => {
+    api<{ configured: boolean }>('/api/auth/session').then((s) => setConfigured(s.configured)).catch(() => undefined);
+  }, []);
+
+  const submit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setBusy(true);
     setError(null);
-    setLoading(true);
-
     try {
-      const res = await fetch('/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username: username.trim(), password }),
-      });
-
-      const data = await res.json();
-
-      if (res.ok && data.success) {
-        localStorage.setItem('aethermail_auth_token', data.token);
-        localStorage.setItem('aethermail_user', JSON.stringify(data.user));
-        onLoginSuccess(data.user);
-      } else {
-        setError(data.error || 'Authentication failed. Please verify credentials.');
-      }
+      const res = await api<{ user: SessionUser }>('/api/auth/login', { method: 'POST', json: { username, password } });
+      onLoginSuccess(res.user);
     } catch (err) {
-      // Fallback client validation in case of offline/network blip
-      if (username.trim() === 'mraaziqp' && password === '114477') {
-        const fallbackUser = {
-          username: 'mraaziqp',
-          displayName: 'Mohamed Raaziq',
-          role: 'Super Admin',
-          primaryEmail: 'mraaziqp@gmail.com',
-        };
-        localStorage.setItem('aethermail_auth_token', 'local_tok_' + Date.now());
-        localStorage.setItem('aethermail_user', JSON.stringify(fallbackUser));
-        onLoginSuccess(fallbackUser);
-      } else {
-        setError('Network error or server unreachable. Please retry.');
-      }
+      setError(err instanceof ApiError ? err.message : 'Could not reach the server.');
     } finally {
-      setLoading(false);
+      setBusy(false);
     }
   };
 
-  const handleQuickFill = () => {
-    setUsername('mraaziqp');
-    setPassword('114477');
-    setError(null);
-  };
-
   return (
-    <div className="min-h-screen w-screen bg-[#07080c] flex items-center justify-center p-4 relative overflow-hidden select-none font-sans">
-      {/* Background ambient radial glow */}
-      <div className="absolute top-1/4 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[600px] h-[400px] bg-gradient-to-b from-amber-500/10 via-amber-600/5 to-transparent blur-3xl pointer-events-none rounded-full" />
-      <div className="absolute -bottom-10 left-1/4 w-[400px] h-[300px] bg-emerald-500/5 blur-3xl pointer-events-none rounded-full" />
-
-      {/* Main Terminal Card */}
-      <div className="w-full max-w-md bg-[#0c0e14] border border-[#1e2330] rounded-2xl p-6 sm:p-8 shadow-2xl relative z-10 space-y-6">
-        {/* Terminal Header */}
-        <div className="text-center space-y-2">
-          <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-gradient-to-br from-amber-500/20 to-amber-600/5 border border-amber-500/40 shadow-inner mb-2 text-amber-400">
-            <Shield className="w-7 h-7" />
+    <div className="app-aurora min-h-screen w-full flex items-center justify-center p-6">
+      <div className="w-full max-w-[420px] animate-pop-in">
+        <div className="flex flex-col items-center text-center mb-10">
+          <div className="relative mb-5">
+            <div className="absolute inset-0 blur-2xl bg-cyan-500/30 rounded-full" />
+            <div className="relative w-16 h-16 rounded-2xl bg-gradient-to-br from-cyan-400 to-violet-500 flex items-center justify-center shadow-2xl">
+              <Mail className="w-8 h-8 text-zinc-950" strokeWidth={2.2} />
+            </div>
           </div>
-
-          <div className="flex items-center justify-center gap-1.5">
-            <h1 className="text-xl font-bold tracking-tight text-zinc-100 font-mono">
-              AETHER<span className="text-amber-400">MAIL</span>
-            </h1>
-            <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 font-bold">
-              SECURE NOC
-            </span>
-          </div>
-
-          <p className="text-xs text-zinc-400 font-mono tracking-tight">
-            Network Operations Center // Identity Sentry
-          </p>
+          <h1 className="text-2xl font-semibold tracking-tight text-zinc-50">AetherMail</h1>
+          <p className="text-sm text-zinc-400 mt-1.5">Unified mail command center</p>
         </div>
 
-        {/* Security Notice Pill */}
-        <div className="flex items-center justify-between px-3 py-2 rounded-lg bg-[#11131a] border border-[#1a1d27] text-[11px] font-mono text-zinc-400">
-          <div className="flex items-center gap-2">
-            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-            <span>Terminal Gateway: Secure</span>
-          </div>
-          <span className="text-zinc-500">v2.5</span>
-        </div>
-
-        {/* Login Form */}
-        <form onSubmit={handleSubmit} className="space-y-4">
-          {error && (
-            <div className="p-3 rounded-lg bg-rose-950/40 border border-rose-500/40 text-rose-300 text-xs font-mono space-y-1 animate-fade-in">
-              <div className="font-bold flex items-center gap-1.5">
-                <span>⚠️</span>
-                <span>Authentication Denied</span>
-              </div>
-              <p className="text-[11px] text-rose-400/90">{error}</p>
+        <form onSubmit={submit} className="rounded-2xl border border-[#1f2331] bg-[#0d0f15]/90 backdrop-blur p-7 space-y-5 shadow-[0_30px_120px_-30px_rgba(0,0,0,0.9)]">
+          {!configured && (
+            <div className="flex gap-3 p-3.5 rounded-xl border border-amber-500/30 bg-amber-500/10 text-amber-200 text-sm">
+              <AlertTriangle className="w-5 h-5 flex-shrink-0 mt-0.5" />
+              <span>
+                Sign-in is not configured on this server. Set <code className="font-mono">ADMIN_PASSWORD</code> and{' '}
+                <code className="font-mono">APP_SECRET</code> in the environment and redeploy.
+              </span>
             </div>
           )}
 
-          {/* Username Field */}
-          <div className="space-y-1.5">
-            <label className="text-[11px] font-mono uppercase tracking-wider text-zinc-400 flex items-center justify-between">
-              <span>Admin Username</span>
-              <span className="text-zinc-600 text-[10px]">ID: mraaziqp</span>
-            </label>
-            <div className="relative">
-              <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-zinc-500">
-                <User className="w-4 h-4" />
-              </div>
+          <label className="block">
+            <span className="text-xs font-medium text-zinc-400">Username</span>
+            <input
+              className={`${inputClass} mt-1.5`}
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              autoComplete="username"
+              autoFocus
+              required
+            />
+          </label>
+          <label className="block">
+            <span className="text-xs font-medium text-zinc-400">Password</span>
+            <div className="relative mt-1.5">
+              <Lock className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-zinc-600" />
               <input
-                type="text"
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                required
-                autoComplete="username"
-                className="w-full pl-9 pr-3 py-2.5 rounded-xl bg-[#11131a] border border-[#1e2330] focus:border-amber-500/60 focus:ring-1 focus:ring-amber-500/40 text-xs text-zinc-100 placeholder-zinc-600 font-mono outline-none transition-all"
-                placeholder="Enter username"
-              />
-            </div>
-          </div>
-
-          {/* Password Field */}
-          <div className="space-y-1.5">
-            <label className="text-[11px] font-mono uppercase tracking-wider text-zinc-400 flex items-center justify-between">
-              <span>Master Password</span>
-              <span className="text-zinc-600 text-[10px]">PIN: 114477</span>
-            </label>
-            <div className="relative">
-              <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-zinc-500">
-                <Lock className="w-4 h-4" />
-              </div>
-              <input
-                type={showPassword ? 'text' : 'password'}
+                className={`${inputClass} pl-10`}
+                type="password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                required
                 autoComplete="current-password"
-                className="w-full pl-9 pr-10 py-2.5 rounded-xl bg-[#11131a] border border-[#1e2330] focus:border-amber-500/60 focus:ring-1 focus:ring-amber-500/40 text-xs text-zinc-100 placeholder-zinc-600 font-mono outline-none transition-all tracking-wider"
-                placeholder="Enter password"
+                required
               />
-              <button
-                type="button"
-                onClick={() => setShowPassword(!showPassword)}
-                className="absolute inset-y-0 right-0 pr-3 flex items-center text-zinc-500 hover:text-zinc-300 transition-colors"
-                title={showPassword ? 'Hide password' : 'Show password'}
-              >
-                {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-              </button>
             </div>
+          </label>
+
+          {error && <div className="text-sm text-rose-300 bg-rose-500/10 border border-rose-500/25 rounded-xl px-3.5 py-2.5">{error}</div>}
+
+          <button type="submit" disabled={busy || !configured} className={`${buttonPrimary} w-full py-3`}>
+            {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <ArrowRight className="w-4 h-4" />}
+            {busy ? 'Signing in…' : 'Sign in'}
+          </button>
+
+          <div className="flex items-center justify-center gap-2 text-xs text-zinc-500 pt-1">
+            <ShieldCheck className="w-3.5 h-3.5 text-emerald-400/80" />
+            Encrypted session · HttpOnly cookie
           </div>
-
-          {/* Submit Button */}
-          <button
-            type="submit"
-            disabled={loading}
-            className="w-full py-2.5 px-4 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-black font-mono font-bold text-xs tracking-wider uppercase transition-all shadow-lg hover:shadow-amber-500/20 disabled:opacity-50 flex items-center justify-center gap-2"
-          >
-            {loading ? (
-              <span>Verifying Credentials...</span>
-            ) : (
-              <>
-                <span>Authenticate Terminal</span>
-                <ArrowRight className="w-4 h-4" />
-              </>
-            )}
-          </button>
         </form>
-
-        {/* Quick Admin Helper */}
-        <div className="pt-2 border-t border-[#1a1d27] flex items-center justify-between text-[11px] font-mono text-zinc-500">
-          <span>Admin Credentials:</span>
-          <button
-            type="button"
-            onClick={handleQuickFill}
-            className="text-amber-400/80 hover:text-amber-300 underline underline-offset-2 flex items-center gap-1 transition-colors"
-          >
-            <span>Fill mraaziqp // 114477</span>
-          </button>
-        </div>
       </div>
     </div>
   );
-};
+}
