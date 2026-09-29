@@ -49,6 +49,16 @@ Neon — all three of which it depended on before, which is why it kept breaking
    over quota — that is the 500 on `/api/emails` while `/api/health` returns 200.
    Mohammed has a paid Neon account; ask him which project, do not go hunting
    for a connection string.
+
+   Once the schema is pushed (`npx drizzle-kit push`), existing local data can be
+   copied across:
+
+   ```bash
+   NEON_TARGET_URL="postgresql://…" npx tsx scripts/sync-to-neon.ts
+   ```
+
+   `DATABASE_URL` stays pointed at the local source; `NEON_TARGET_URL` is the
+   destination.
 5. **Rotate the leaked credentials** (see the warning at the bottom).
 
 ---
@@ -159,6 +169,9 @@ Live credentials were committed and pushed to GitHub:
 - **Two Gmail app passwords** in this repo, commit `a933276` — in `server.ts`,
   `src/app/actions/send-email.ts` and the built `api/index.js`, as
   `process.env.X || '<literal>'` fallbacks.
+- **A Neon database password** in `scripts/sync-to-neon.ts` in this repo, as a
+  string literal. That script also passed it to `curl` on the command line,
+  exposing it in `ps` output and shell history. Now env-only and using `fetch`.
 - **A Neon database password** in `mraaziqp/VerifiedBizLink`'s `.env.example`,
   which is a *tracked* file, plus `||` fallbacks in `scripts/*.js` there.
 
