@@ -16,6 +16,19 @@ interface Preset {
 // imap.zoho.com is only for personal @zoho.com addresses.
 const PRESETS: Preset[] = [
   {
+    id: 'resend',
+    label: 'Business address (Resend)',
+    imap: '',
+    smtp: '',
+    smtpPort: 0,
+    hint: (
+      <>
+        For any address on your own domain. Resend delivers incoming mail to AetherMail by webhook and sends replies —
+        no password needed. Mail to addresses you have not added is still captured; they appear automatically.
+      </>
+    ),
+  },
+  {
     id: 'zoho',
     label: 'Zoho (business domain)',
     imap: 'imappro.zoho.com',
@@ -84,11 +97,19 @@ export function ConnectMailboxModal({
     setSmtp(pr.smtp);
   };
 
+  const isResend = preset.id === 'resend';
+
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     setBusy(true);
     setResult(null);
     try {
+      if (isResend) {
+        await api('/api/accounts/address', { method: 'POST', json: { email_address: email, display_name: name } });
+        setResult({ ok: true, text: `${email} added. It receives through Resend and can send straight away.` });
+        onConnected();
+        return;
+      }
       const r = await api<{ report?: { imported: number; status: string; error?: string }; folders: string[] }>('/api/accounts/connect', {
         method: 'POST',
         timeoutMs: 90_000,
@@ -115,7 +136,7 @@ export function ConnectMailboxModal({
   };
 
   return (
-    <Modal open={isOpen} onClose={onClose} title="Connect a mailbox" subtitle="Login is verified before anything is saved. Passwords are stored encrypted." icon={<Plug className="w-5 h-5" />}>
+    <Modal open={isOpen} onClose={onClose} title="Connect a mailbox" subtitle="Business addresses run on Resend. Other mailboxes connect over IMAP; logins are verified and stored encrypted." icon={<Plug className="w-5 h-5" />}>
       <form onSubmit={submit} className="space-y-5">
         <div className="grid grid-cols-2 gap-2">
           {PRESETS.map((pr) => (
@@ -139,14 +160,15 @@ export function ConnectMailboxModal({
             <span className="text-xs font-medium text-zinc-400">Email address</span>
             <input className={`${inputClass} mt-1.5`} type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="contact@arpcloudsolutions.co.za" required />
           </label>
-          <label className="block">
+          {!isResend && <label className="block">
             <span className="text-xs font-medium text-zinc-400">App password</span>
             <input className={`${inputClass} mt-1.5`} type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="new-password" required />
-          </label>
+          </label>}
           <label className="block">
             <span className="text-xs font-medium text-zinc-400">Display name (for sending)</span>
             <input className={`${inputClass} mt-1.5`} value={name} onChange={(e) => setName(e.target.value)} placeholder="ARP Cloud Solutions" />
           </label>
+          {!isResend && <>
           <label className="block">
             <span className="text-xs font-medium text-zinc-400">IMAP server</span>
             <input className={`${inputClass} mt-1.5 font-mono text-[13px]`} value={imap} onChange={(e) => setImap(e.target.value)} placeholder="imap.example.com" required />
@@ -155,6 +177,7 @@ export function ConnectMailboxModal({
             <span className="text-xs font-medium text-zinc-400">SMTP server (optional)</span>
             <input className={`${inputClass} mt-1.5 font-mono text-[13px]`} value={smtp} onChange={(e) => setSmtp(e.target.value)} placeholder="smtp.example.com" />
           </label>
+          </>}
         </div>
 
         {result && (
@@ -167,7 +190,7 @@ export function ConnectMailboxModal({
         <div className="flex justify-end">
           <button type="submit" disabled={busy} className={buttonPrimary}>
             {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plug className="w-4 h-4" />}
-            {busy ? 'Verifying login & importing…' : 'Connect mailbox'}
+            {busy ? (isResend ? 'Adding…' : 'Verifying login & importing…') : isResend ? 'Add address' : 'Connect mailbox'}
           </button>
         </div>
       </form>

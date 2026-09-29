@@ -204,6 +204,39 @@ var init_db = __esm({
   }
 });
 
+// src/lib/business-mailboxes.ts
+var business_mailboxes_exports = {};
+__export(business_mailboxes_exports, {
+  businessDomain: () => businessDomain,
+  ensureBusinessMailboxes: () => ensureBusinessMailboxes
+});
+function businessDomain() {
+  return process.env.BUSINESS_DOMAIN?.trim().toLowerCase() || process.env.AETHERMAIL_SENDER?.trim().toLowerCase().split("@")[1] || null;
+}
+async function ensureBusinessMailboxes() {
+  const domain = businessDomain();
+  const list = process.env.BUSINESS_MAILBOXES?.split(",").map((s) => s.trim().toLowerCase()).filter(Boolean) ?? [];
+  if (!list.length) return;
+  const addresses = list.map((x) => x.includes("@") ? x : domain ? `${x}@${domain}` : "").filter((a) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(a));
+  if (!addresses.length) return;
+  const name = process.env.BUSINESS_NAME?.trim() || null;
+  await db.insert(accounts).values(
+    addresses.map((email, i) => ({
+      id: `acc_biz_${email.replace(/[^a-z0-9]/g, "_")}`,
+      provider: "resend",
+      email_address: email,
+      display_name: i === 0 ? name : null,
+      sync_status: "synced"
+    }))
+  ).onConflictDoNothing();
+}
+var init_business_mailboxes = __esm({
+  "src/lib/business-mailboxes.ts"() {
+    init_db();
+    init_schema();
+  }
+});
+
 // src/lib/gemini.ts
 import { GoogleGenAI, Type } from "@google/genai";
 function isAiConfigured() {
@@ -1154,7 +1187,7 @@ async function ingestResendEvent(event) {
   const full = (meta.html || meta.text ? meta : null) ?? (resendId ? await fetchReceived(resendId) : null);
   const msg = { ...meta, ...full ?? {} };
   const recipients = [...toArray(msg.to), ...toArray(msg.cc)].map(bareAddress);
-  const domain = process.env.BUSINESS_DOMAIN?.trim().toLowerCase() || process.env.AETHERMAIL_SENDER?.split("@")[1]?.toLowerCase();
+  const domain = businessDomain();
   let stored = 0;
   const targets = recipients.filter((r) => !domain || r.endsWith(`@${domain}`));
   for (const rcpt of targets.length ? targets : recipients.slice(0, 1)) {
@@ -1203,6 +1236,7 @@ var init_resend_inbound = __esm({
     init_classify();
     init_notify();
     init_store_email();
+    init_business_mailboxes();
     toArray = (v) => Array.isArray(v) ? v : v ? [v] : [];
     bareAddress = (s) => (s.match(/<([^>]+)>/)?.[1] ?? s).trim().toLowerCase();
   }
@@ -1311,7 +1345,10 @@ var ready = null;
 function ensureSchema() {
   if (!ready) {
     ready = pool.query(DDL).then(
-      () => void 0,
+      async () => {
+        const { ensureBusinessMailboxes: ensureBusinessMailboxes2 } = await Promise.resolve().then(() => (init_business_mailboxes(), business_mailboxes_exports));
+        await ensureBusinessMailboxes2().catch((err) => console.warn("[schema] business mailboxes not seeded:", err.message));
+      },
       (err) => {
         ready = null;
         throw err;
@@ -3018,6 +3055,7 @@ init_secrets();
 init_sync_runner();
 init_imap_sync();
 init_notify();
+init_business_mailboxes();
 var PORT = Number(process.env.PORT) || 3007;
 var IS_SERVERLESS = !!process.env.VERCEL;
 var escapeHtml = (s) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
@@ -3223,6 +3261,21 @@ async function createApp() {
       } catch (err) {
         res.status(400).json({ success: false, error: err.message });
       }
+    })
+  );
+  app.post(
+    "/api/accounts/address",
+    asyncRoute(async (req, res) => {
+      const email = String(req.body?.email_address ?? "").trim().toLowerCase();
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ success: false, error: "Enter a valid email address." });
+      const domain = businessDomain();
+      if (!domain) return res.status(400).json({ success: false, error: "Set BUSINESS_DOMAIN (or AETHERMAIL_SENDER) so AetherMail knows which domain Resend serves." });
+      if (!email.endsWith(`@${domain}`)) {
+        return res.status(400).json({ success: false, error: `Only addresses on ${domain} can be served by Resend. Use an IMAP preset for other mailboxes.` });
+      }
+      const display = typeof req.body?.display_name === "string" ? req.body.display_name.trim() || null : null;
+      const [row] = await db.insert(accounts).values({ id: `acc_biz_${email.replace(/[^a-z0-9]/g, "_")}`, provider: "resend", email_address: email, display_name: display, sync_status: "synced" }).onConflictDoUpdate({ target: accounts.email_address, set: { display_name: display } }).returning();
+      res.status(201).json({ success: true, account: publicAccount(row) });
     })
   );
   app.patch(

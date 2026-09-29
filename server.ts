@@ -22,6 +22,7 @@ import { publicMailboxConfig } from './src/lib/secrets.ts';
 import { syncAllAccounts, syncOneAccount, startBackgroundSync } from './src/lib/sync-runner.ts';
 import { resetSyncState } from './src/lib/imap-sync.ts';
 import { pushAlert } from './src/lib/notify.ts';
+import { businessDomain } from './src/lib/business-mailboxes.ts';
 
 // 3000 is NexussEmu, 3005 Second Brain, 3006 the hub — AetherMail takes 3007.
 const PORT = Number(process.env.PORT) || 3007;
@@ -303,6 +304,27 @@ export async function createApp() {
       } catch (err) {
         res.status(400).json({ success: false, error: (err as Error).message });
       }
+    })
+  );
+
+  /** A business address served by Resend (receives by webhook, sends via API) — no password. */
+  app.post(
+    '/api/accounts/address',
+    asyncRoute(async (req, res) => {
+      const email = String(req.body?.email_address ?? '').trim().toLowerCase();
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ success: false, error: 'Enter a valid email address.' });
+      const domain = businessDomain();
+      if (!domain) return res.status(400).json({ success: false, error: 'Set BUSINESS_DOMAIN (or AETHERMAIL_SENDER) so AetherMail knows which domain Resend serves.' });
+      if (!email.endsWith(`@${domain}`)) {
+        return res.status(400).json({ success: false, error: `Only addresses on ${domain} can be served by Resend. Use an IMAP preset for other mailboxes.` });
+      }
+      const display = typeof req.body?.display_name === 'string' ? req.body.display_name.trim() || null : null;
+      const [row] = await db
+        .insert(accounts)
+        .values({ id: `acc_biz_${email.replace(/[^a-z0-9]/g, '_')}`, provider: 'resend', email_address: email, display_name: display, sync_status: 'synced' })
+        .onConflictDoUpdate({ target: accounts.email_address, set: { display_name: display } })
+        .returning();
+      res.status(201).json({ success: true, account: publicAccount(row) });
     })
   );
 

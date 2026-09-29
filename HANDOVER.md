@@ -59,17 +59,13 @@ Neon — all three of which it depended on before, which is why it kept breaking
 - `Consolidated-Hub/scripts/dns/add-verification.sh resend-send` — the `send.`
   MX/SPF records Resend needs, which the DNS plan was missing.
 
-### Not done — needs your accounts (see BUSINESS-MAIL.md, steps 1–6)
+### Not done — needs your logins
 
-1. **Apply DNS** (`aws login`, then `apply-dns.sh --apply`).
-2. **Zoho**: account, domain verification, `contact@` + aliases, DKIM, IMAP on,
-   app password. Confirm the plan includes IMAP.
-3. **Resend**: add + verify the domain (DKIM + `send.` records).
-4. **Vercel**: env vars (`DATABASE_URL` on a Neon project with headroom,
-   `ADMIN_PASSWORD`, `APP_SECRET`, `CRON_SECRET`, `RESEND_API_KEY`, …) and the
-   `aethermail.arpcloudsolutions.co.za` domain.
-5. **GitHub secrets** `AETHERMAIL_URL` + `CRON_SECRET` for the sync workflow.
-6. **Rotate the leaked credentials** (see the warning at the bottom).
+Mail now runs on **Resend for sending and receiving** (Zoho dropped).
+Everything else is one command: `./scripts/go-live.sh` (see BUSINESS-MAIL.md).
+It needs `aws login`, `npx vercel login`, a full-access `RESEND_API_KEY`, and a
+`DATABASE_URL` on a Neon project with headroom. Then rotate the leaked
+credentials listed at the bottom.
 
 ---
 

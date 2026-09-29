@@ -5,6 +5,7 @@ import { accounts, type NewEmail } from '../db/schema.ts';
 import { heuristicClassify } from './classify.ts';
 import { pushAlert } from './notify.ts';
 import { storeEmail } from './store-email.ts';
+import { businessDomain } from './business-mailboxes.ts';
 
 /**
  * Resend inbound mail (optional ingestion route).
@@ -87,7 +88,7 @@ export async function ingestResendEvent(event: { type?: string; data?: ReceivedE
   const msg: ReceivedEmail = { ...meta, ...(full ?? {}) };
 
   const recipients = [...toArray(msg.to), ...toArray(msg.cc)].map(bareAddress);
-  const domain = process.env.BUSINESS_DOMAIN?.trim().toLowerCase() || process.env.AETHERMAIL_SENDER?.split('@')[1]?.toLowerCase();
+  const domain = businessDomain();
 
   // Every address on the business domain gets its own mailbox row, so a
   // catch-all MX captures mail to any address, not only pre-registered ones.

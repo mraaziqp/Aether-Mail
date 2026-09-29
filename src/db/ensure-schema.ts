@@ -106,7 +106,10 @@ let ready: Promise<void> | null = null;
 export function ensureSchema(): Promise<void> {
   if (!ready) {
     ready = pool.query(DDL).then(
-      () => undefined,
+      async () => {
+        const { ensureBusinessMailboxes } = await import('../lib/business-mailboxes.ts');
+        await ensureBusinessMailboxes().catch((err) => console.warn('[schema] business mailboxes not seeded:', err.message));
+      },
       (err) => {
         // Let the next request retry rather than caching a transient failure
         // (Neon cold start, network blip) for the life of the process.
