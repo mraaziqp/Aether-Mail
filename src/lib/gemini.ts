@@ -3,6 +3,11 @@ import type { GeminiExtractionResult } from '../types.ts';
 
 let aiClient: GoogleGenAI | null = null;
 
+/** True when some model can classify mail: Gemini, or an explicitly configured local server. */
+export function isAiConfigured(): boolean {
+  return Boolean(process.env.GEMINI_API_KEY?.trim() || process.env.LOCAL_LLM_URL?.trim());
+}
+
 export function getGeminiClient(): GoogleGenAI {
   if (!aiClient) {
     const apiKey = process.env.GEMINI_API_KEY;
@@ -28,7 +33,8 @@ const VALID_CATEGORIES = new Set([
 ]);
 
 async function classifyWithLocalModel(prompt: string): Promise<GeminiExtractionResult | null> {
-  const baseUrl = (process.env.LOCAL_LLM_URL || 'http://localhost:11434/v1').replace(/\/$/, '');
+  if (!process.env.LOCAL_LLM_URL?.trim()) return null;
+  const baseUrl = process.env.LOCAL_LLM_URL.trim().replace(/\/$/, '');
   const model = process.env.LOCAL_LLM_MODEL || 'llama3.1:8b';
 
   try {
@@ -51,7 +57,7 @@ async function classifyWithLocalModel(prompt: string): Promise<GeminiExtractionR
         max_tokens: 200,
       }),
       // Local inference is slow and this runs during ingestion, so bound it.
-      signal: AbortSignal.timeout(120_000),
+      signal: AbortSignal.timeout(Number(process.env.LOCAL_LLM_TIMEOUT_MS) || 30_000),
     });
 
     if (!res.ok) return null;
@@ -84,6 +90,15 @@ export async function processEmailWithGemini(params: {
   sender: string;
   body: string;
 }): Promise<GeminiExtractionResult> {
+  return (await classifyWithAi(params)) ?? keywordFallback(params);
+}
+
+/** Model verdict, or null when no model is configured or it failed. Never throws. */
+export async function classifyWithAi(params: {
+  subject: string;
+  sender: string;
+  body: string;
+}): Promise<GeminiExtractionResult | null> {
   // This machine runs no cloud AI keys, so classification goes to the local
   // model rather than silently degrading to keyword matching on every message.
   // Gemini is still used when a key is present.
@@ -101,10 +116,7 @@ Guidelines:
 3. "requires_alert" must be true if this email requires immediate human attention (e.g. critical security issue, server outage, urgent financial action, tight turnaround deadline). Otherwise false.`;
 
   if (!process.env.GEMINI_API_KEY) {
-    const local = await classifyWithLocalModel(prompt);
-    if (local) return local;
-    // Neither classifier available — fall through to the keyword heuristic.
-    throw new Error('No classifier available (no GEMINI_API_KEY, local model unreachable)');
+    return classifyWithLocalModel(prompt);
   }
 
   const ai = getGeminiClient();
@@ -142,10 +154,16 @@ Guidelines:
     }
 
     const parsed = JSON.parse(text) as GeminiExtractionResult;
+    if (!VALID_CATEGORIES.has(parsed.category)) return null;
     return parsed;
   } catch (error) {
-    console.error('Gemini extraction error:', error);
-    // Graceful fallback logic
+    console.error('Gemini extraction error:', error instanceof Error ? error.message : error);
+    return null;
+  }
+}
+
+function keywordFallback(params: { subject: string; body: string }): GeminiExtractionResult {
+  {
     const content = `${params.subject} ${params.body}`.toLowerCase();
     let category: GeminiExtractionResult['category'] = 'work';
     let requires_alert = false;

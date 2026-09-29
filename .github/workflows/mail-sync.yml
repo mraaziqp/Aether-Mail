@@ -1,0 +1,43 @@
+# Pulls new mail into AetherMail every 5 minutes, independent of anyone having
+# the console open. Vercel's Hobby plan only allows a daily cron, so this is
+# the scheduler that keeps a serverless deployment current.
+#
+# Needs two repository secrets (Settings → Secrets and variables → Actions):
+#   AETHERMAIL_URL  e.g. https://aethermail.arpcloudsolutions.co.za
+#   CRON_SECRET     the same value as CRON_SECRET in the Vercel project
+name: Mail sync
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: mail-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Trigger sync
+        env:
+          AETHERMAIL_URL: ${{ secrets.AETHERMAIL_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          if [ -z "$AETHERMAIL_URL" ] || [ -z "$CRON_SECRET" ]; then
+            echo "::notice::AETHERMAIL_URL / CRON_SECRET secrets not set — skipping."
+            exit 0
+          fi
+          code=$(curl -sS -o body.json -w '%{http_code}' --max-time 90 \
+            -H "Authorization: Bearer $CRON_SECRET" "$AETHERMAIL_URL/api/cron/sync")
+          cat body.json; echo
+          if [ "$code" != "200" ]; then
+            echo "::error::Sync endpoint returned HTTP $code"
+            exit 1
+          fi
+          # Surface mailbox-level failures (bad password, IMAP disabled) as a failed run.
+          if grep -q '"status":"error"' body.json; then
+            echo "::warning::One or more mailboxes failed to sync — open Sync health in AetherMail."
+          fi

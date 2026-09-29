@@ -1,150 +1,95 @@
-# Business mail for arpcloudsolutions.co.za
+# Business mail for arpcloudsolutions.co.za — runbook
 
-Status as of 2026-09-29. Replaces the earlier "pick a provider" version — the
-provider is now chosen (Zoho Mail, free tier) and this is the runbook.
+Status as of 2026-09-29. **Decision: Resend handles both sending and
+receiving** (Zoho dropped). The code is finished and tested; going live is one
+script run on a machine logged in to AWS and Vercel.
 
-## Why it was not working
-
-Not a code problem. `arpcloudsolutions.co.za` had **no mail DNS at all**: no MX,
-no SPF, no DKIM, no DMARC. Nothing on the internet knew where to deliver mail
-for the domain, and nothing could legitimately send as it. `mail.` and
-`aethermail.` had no A record either, so both Vercel subdomains were dead
-while `templates.`, `builder.`, `raaziq.` and `portfolio.` worked fine.
-
-## Why it cannot be self-hosted here
-
-Stalwart is installed and running (`stalwart.service`, user scope,
-`~/stalwart-data`). It cannot be the MX for this domain, and the reason is
-measured, not assumed:
-
-```
-gmail-smtp-in.l.google.com:25  FAIL (15s silent timeout)
-alt1.aspmx.l.google.com:25     FAIL (15s silent timeout)
-smtp.resend.com:587            OPEN (214ms)
-smtp.gmail.com:465             OPEN (198ms)
-```
-
-Port 25 is blocked by the ISP. That kills delivery **and** receiving. The
-machine is behind NAT on 192.168.31.166, and Cloudflare Tunnel only carries
-HTTP, so it cannot forward SMTP or IMAP either. A residential IP also sits on
-the Spamhaus PBL, so anything that did escape would land in spam.
-
-Stalwart's own log shows the consequence: it has been failing Let's Encrypt
-`tls-alpn-01` every few hours for two days against `mail.`, `mta-sts.` and
-`autoconfig.`, all NXDOMAIN. Once `mail.` points at Vercel it will keep
-failing, for a different reason. **Disable its ACME or stop the service** — it
-is burning validation attempts against a rate-limited endpoint for no benefit.
-
-It stays useful as a local archive/dev IMAP target. It is not the MX.
-
-## The shape that works 24/7
-
-| Concern | Where it lives | Depends on |
-|---|---|---|
-| Receiving | Zoho Mail MX | Zoho only |
-| Real inboxes (`contact@`, `info@`, `billing@`) | Zoho webmail + IMAP | Zoho only |
-| App/transactional sending | Resend (`smtp.resend.com:587`) | Resend only |
-| Unified view, triage, Jarvis | AetherMail on Vercel | Vercel + Neon |
-
-The point of the split: business mail must not depend on the laptop, on Vercel,
-or on Neon. AetherMail sits **on top** of the Zoho mailbox over IMAP. If
-AetherMail is down, mail still arrives and can still be read at Zoho.
-
-## Steps
-
-### 1. DNS — core records
-
-Needs an authenticated AWS session; the zone is in Route 53.
+## Go live — one command
 
 ```bash
-aws login
-cd ~/Desktop/projects/arpcloudsolutions/Consolidated-Hub-main
-./scripts/dns/apply-dns.sh            # dry run — shows current vs intended
-./scripts/dns/apply-dns.sh --apply
+git pull                                   # main, after the PR merge
+npm ci
+aws login                                  # Route 53 for arpcloudsolutions.co.za
+npx vercel login
+export RESEND_API_KEY=re_...               # FULL-access key (resend.com/api-keys)
+export DATABASE_URL='postgresql://...'     # Neon pooled URL with headroom (first run)
+./scripts/go-live.sh --dry-run             # read-only: shows every change
+./scripts/go-live.sh                       # does it
 ```
 
-Writes `mail.`/`aethermail.` A records (76.76.21.21, Vercel), Zoho MX, SPF and
-DMARC. It backs up the whole zone first and refuses to run if the apex TXT
-holds anything it would clobber.
+What it does, in order (safe to re-run; it only changes what is missing):
 
-DMARC starts at `p=quarantine`, deliberately. `p=reject` with a
-not-yet-correct SPF silently destroys real mail.
+1. **Resend** — adds `arpcloudsolutions.co.za` (sending + receiving) and reads
+   the DNS records Resend generates for it.
+2. **Route 53** — backs up the zone, then writes: Resend DKIM
+   (`resend._domainkey`), the `send.` MX + SPF, the **receiving MX** on the
+   apex, the `aethermail.` A record → Vercel, SPF (merged with anything already
+   there) and DMARC. It refuses to replace an apex MX that is not Resend's.
+3. **Resend** — triggers verification and waits for it, then creates the
+   `email.received` webhook → `https://aethermail.arpcloudsolutions.co.za/api/webhooks/resend`.
+4. **Vercel** — sets `RESEND_API_KEY`, `RESEND_WEBHOOK_SECRET`, `ADMIN_PASSWORD`
+   (generated and printed once if you have none), `APP_SECRET`, `CRON_SECRET`,
+   the business identity, and `DATABASE_URL` if given; attaches
+   `aethermail.arpcloudsolutions.co.za`; deploys to production.
+5. **GitHub** — sets `AETHERMAIL_URL` + `CRON_SECRET` for the 5-minute sync job
+   (needs `gh auth login`; otherwise it tells you to add them by hand).
+6. **Checks** — DNS answers and `https://aethermail.arpcloudsolutions.co.za/api/health?deep=1`.
 
-### 2. Zoho — create the account and mailboxes
+Then: from Gmail, send to `contact@arpcloudsolutions.co.za` → it appears in
+AetherMail within seconds. Reply from AetherMail → in the recipient's
+"Show original", SPF, DKIM and DMARC all say PASS.
 
-Manual; mailbox creation is the provider's, and the account has to be yours.
+If Resend's API does not return a receiving MX (receiving not enabled for the
+domain), the script says so: enable **Receiving** on the domain in the Resend
+dashboard and re-run, or pass `RESEND_INBOUND_MX=<host shown there>`.
 
-1. Sign up at <https://www.zoho.com/mail/> → Forever Free plan, "add existing domain".
-2. Enter `arpcloudsolutions.co.za`. Zoho gives a verification value.
-3. Apply it:
-   ```bash
-   ./scripts/dns/add-verification.sh zoho-verify-cname zbXXXXXXXX --apply
-   ```
-   (Use `zoho-verify-txt` if Zoho offers only the TXT method. That path merges
-   with the live apex TXT so SPF survives.)
-4. Create `contact@`, `info@`, `billing@`.
-5. Zoho → Email Authentication → generate DKIM, then:
-   ```bash
-   ./scripts/dns/add-verification.sh zoho-dkim zoho "v=DKIM1; k=rsa; p=MIGf..." --apply
-   ```
-   The script chunks keys over 255 characters, which Route 53 rejects otherwise.
+## How mail flows
 
-If you sign up on a regional Zoho DC the MX hostnames differ (`mx.zoho.eu` and
-friends). Check what Zoho shows you against `route53-core.json` before applying.
+| Concern | Lives at |
+|---|---|
+| **Receiving** | MX → Resend → signed webhook → AetherMail (every address on the domain; unknown ones get a mailbox automatically) |
+| **Sending** | AetherMail → Resend API (DKIM-signed as the domain) |
+| **Console** | `https://aethermail.arpcloudsolutions.co.za` — Vercel + Neon, installable on phone/desktop |
 
-### 3. Resend — verify the domain for app sending
+Resilience: Resend keeps every received message and retries the webhook when
+AetherMail is unreachable, so an outage of Vercel or Neon delays mail — it
+does not lose it. Received messages can also be read in the Resend dashboard
+(Emails → Receiving) at any time.
 
-The API key in `.env` is send-scoped, so domain status cannot be read from the
-CLI. In the Resend dashboard, add `arpcloudsolutions.co.za`, then apply the
-DKIM value it gives:
+Mailboxes seeded automatically: `contact@`, `info@`, `sales@`, `billing@`
+(`BUSINESS_MAILBOXES`). Add more under **Mailboxes + → Business address
+(Resend)**; no password is involved. Gmail and other external mailboxes can
+still be connected over IMAP alongside.
 
-```bash
-./scripts/dns/add-verification.sh resend-dkim "p=MIGf..." --apply
-```
+## Why it did not work before
 
-Resend uses a `send.` subdomain for its return path, so it does not fight
-Zoho's MX on the apex. The apex SPF already includes `amazonses.com`.
+1. The domain had **no MX, SPF, DKIM or DMARC** — nothing on the internet knew
+   where to deliver its mail. (Fixed by `scripts/go-live.sh`.)
+2. Mailboxes connected in the UI **never saved their password**, so every sync
+   after the first silently skipped them — "delayed / sometimes slow to update".
+3. Every 30 s the browser made the server re-download the newest 30 full
+   messages from every mailbox, one account at a time, then pulled every email
+   body in the database back to the browser. That was the slowness, and very
+   likely what used up the Neon quota.
 
-### 4. Point AetherMail at the mailbox
+All of 2 and 3 is fixed: incremental UID sync (a no-change check of two
+mailboxes takes ~0.3 s), passwords stored encrypted, bodies fetched only when a
+message is opened, IMAP IDLE push on a long-running server (new mail visible in
+~2 s), and a 5-minute scheduler for the serverless deployment.
 
-In `.env` and in the Vercel `aethermail` project:
+## Manual equivalent (no script)
 
-```
-IMAP_HOST=imap.zoho.com
-IMAP_PORT=993
-IMAP_PROVIDER=zoho
-IMAP_SPAM_FOLDER=Spam
-IMAP_PASSWORD=<Zoho app-specific password for contact@>
-AETHERMAIL_SENDER=contact@arpcloudsolutions.co.za
-```
+- Resend dashboard → Domains → Add `arpcloudsolutions.co.za`, enable Receiving.
+- Put each record Resend shows into Route 53 (Consolidated-Hub has helpers:
+  `add-verification.sh resend-dkim …` and `resend-send us-east-1`), plus the
+  receiving MX on the apex. `Consolidated-Hub/scripts/dns/apply-dns.sh` writes
+  the `aethermail.` A record, SPF and DMARC.
+- Resend → Webhooks → add `https://aethermail.arpcloudsolutions.co.za/api/webhooks/resend`,
+  event `email.received`; copy the signing secret.
+- Vercel → env vars as listed in `.env.example`, Domains → add the subdomain, redeploy.
 
-`src/lib/imap-sync.ts` resolves the server per address: Gmail, Outlook and
-`zoho.com` by name, anything else via `IMAP_HOST`. An unknown domain throws
-instead of quietly defaulting to Gmail — that default used to turn "this domain
-is not configured" into "authentication failed".
+## Do not self-host the MX
 
-The unified sync no longer skips non-Gmail accounts. That `@gmail.com` gate was
-silently excluding the business mailboxes, which are the ones that matter.
-
-### 5. Verify
-
-```bash
-dig +short MX arpcloudsolutions.co.za
-dig +short TXT arpcloudsolutions.co.za
-dig +short TXT _dmarc.arpcloudsolutions.co.za
-dig +short A mail.arpcloudsolutions.co.za
-```
-
-Then send a real message from an outside address to `contact@` and confirm it
-lands in Zoho. Check SPF/DKIM/DMARC all pass in the received headers before
-telling anyone the address works.
-
-## Still outstanding
-
-- **Neon is over quota**, which is why `https://aethermail-five.vercel.app/api/emails`
-  returns 500 while `/api/health` is fine. AetherMail's unified view stays broken
-  until `DATABASE_URL` points at a project with headroom. Business mail does not
-  depend on this.
-- **Leaked credentials.** Two Gmail app passwords were committed to this repo
-  (commit `a933276`) and pushed. Source is clean now, but they are in history and
-  must be revoked and reissued.
+Measured on the old laptop: port 25 is blocked both ways, it sits behind NAT,
+Cloudflare Tunnel carries HTTP only, and a residential IP is on the Spamhaus
+PBL.

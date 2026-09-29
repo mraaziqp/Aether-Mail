@@ -1,4 +1,4 @@
-import { pgTable, text, boolean, timestamp, jsonb } from 'drizzle-orm/pg-core';
+import { pgTable, text, boolean, timestamp, jsonb, bigint, index, uniqueIndex, primaryKey } from 'drizzle-orm/pg-core';
 import { relations } from 'drizzle-orm';
 
 export const accounts = pgTable('accounts', {
@@ -8,6 +8,11 @@ export const accounts = pgTable('accounts', {
   oauth_tokens: jsonb('oauth_tokens'),
   sync_status: text('sync_status').notNull().default('synced'),
   created_at: timestamp('created_at').defaultNow(),
+  display_name: text('display_name'),
+  last_synced_at: timestamp('last_synced_at'),
+  last_sync_error: text('last_sync_error'),
+  /** Cross-instance sync lock: a sync only runs while it holds an unexpired lease. */
+  sync_lease_until: timestamp('sync_lease_until'),
 });
 
 export const emails = pgTable('emails', {
@@ -25,7 +30,37 @@ export const emails = pgTable('emails', {
   requires_alert: boolean('requires_alert').notNull().default(false),
   is_read: boolean('is_read').notNull().default(false),
   received_at: timestamp('received_at').defaultNow(),
-});
+  /** RFC 5322 Message-ID header, used for reply threading. */
+  message_id: text('message_id'),
+  recipients: text('recipients'),
+  /** 'inbound' | 'outbound' */
+  direction: text('direction').notNull().default('inbound'),
+  folder: text('folder'),
+  has_attachments: boolean('has_attachments').notNull().default(false),
+}, (t) => [
+  index('emails_received_at_idx').on(t.received_at),
+  index('emails_account_received_idx').on(t.account_id, t.received_at),
+  index('emails_category_idx').on(t.category),
+  index('emails_thread_idx').on(t.thread_id),
+  // The same message can legitimately sit in two connected mailboxes (sent to
+  // contact@ and info@): dedupe per account, not globally.
+  uniqueIndex('emails_account_message_uidx').on(t.account_id, t.message_id),
+]);
+
+/**
+ * Incremental IMAP position per mailbox folder. With the last seen UID stored,
+ * a sync with nothing new costs one STATUS command instead of re-downloading
+ * the newest N messages every time.
+ */
+export const sync_state = pgTable('sync_state', {
+  account_id: text('account_id')
+    .notNull()
+    .references(() => accounts.id, { onDelete: 'cascade' }),
+  folder: text('folder').notNull(),
+  uid_validity: bigint('uid_validity', { mode: 'number' }).notNull(),
+  last_uid: bigint('last_uid', { mode: 'number' }).notNull().default(0),
+  updated_at: timestamp('updated_at').defaultNow(),
+}, (t) => [primaryKey({ columns: [t.account_id, t.folder] })]);
 
 export const accountsRelations = relations(accounts, ({ many }) => ({
   emails: many(emails),
@@ -106,4 +141,6 @@ export type NewMailbox = typeof mailboxes.$inferInsert;
 export type AgentKey = typeof agent_keys.$inferSelect;
 export type NewAgentKey = typeof agent_keys.$inferInsert;
 
-export type EmailCategory = 'urgent' | 'personal' | 'newsletter' | 'automated' | 'work' | 'financial';
+export type SyncState = typeof sync_state.$inferSelect;
+
+export type EmailCategory = 'urgent' | 'personal' | 'newsletter' | 'automated' | 'work' | 'financial' | 'spam';

@@ -1,323 +1,139 @@
-import React, { useState } from 'react';
-import { 
-  Sparkles, 
-  Search, 
-  X, 
-  BellRing, 
-  Database, 
-  Send, 
-  ArrowRight,
-  Terminal,
-  Menu,
-  Key,
-  Activity,
-  RefreshCw,
-  Bell,
-  LogOut,
-  Palette,
-  Shield
-} from 'lucide-react';
-import type { ParsedSearchIntent, Account } from '../types.ts';
+import React, { useEffect, useRef } from 'react';
+import { Search, Sparkles, RefreshCw, Bell, BellOff, Menu, X, Mail, WifiOff } from 'lucide-react';
+import type { SessionUser } from '../types.ts';
+import { relativeTime, iconButton, Kbd } from './ui.tsx';
 
-interface DashboardHeaderProps {
-  accounts: Account[];
-  selectedAccountId: string;
-  onExecuteSmartSearch: (query: string) => Promise<void>;
+interface HeaderProps {
+  user: SessionUser | null;
+  search: string;
+  onSearchChange: (v: string) => void;
+  aiSearch: boolean;
+  onToggleAiSearch: () => void;
+  onSubmitSearch: () => void;
+  onClearSearch: () => void;
   isSmartSearching: boolean;
-  parsedIntent: ParsedSearchIntent | null;
-  onClearSmartSearch: () => void;
-  onOpenWebhookModal: () => void;
-  onOpenDeveloperModal: () => void;
-  onToggleSidebar?: () => void;
-  activeSearchQuery: string;
-  setActiveSearchQuery: (query: string) => void;
-  currentView?: 'feed' | 'developer';
-  onSelectView?: (view: 'feed' | 'developer') => void;
-  alertCount?: number;
-  onRefresh?: () => void;
-  loading?: boolean;
-  notificationPermission?: NotificationPermission;
-  onRequestNotificationPermission?: () => void;
-  onLogout?: () => void;
-  onOpenProfileModal?: () => void;
-  currentTheme?: string;
-  onOpenThemeModal?: () => void;
+  aiAvailable: boolean;
+  syncing: boolean;
+  lastSyncAt: number | null;
+  online: boolean;
+  liveMode: 'push' | 'poll';
+  now: number;
+  onSyncNow: () => void;
+  notificationsOn: boolean;
+  onToggleNotifications: () => void;
+  onOpenMobileNav: () => void;
+  onOpenHealth: () => void;
 }
 
-const SAMPLE_QUERIES = [
-  'Find urgent server alerts',
-  'Term sheets or investment letters',
-  'Receipts and cloud invoices',
-];
+export function DashboardHeader(p: HeaderProps) {
+  const inputRef = useRef<HTMLInputElement>(null);
 
-export const DashboardHeader: React.FC<DashboardHeaderProps> = ({
-  accounts,
-  selectedAccountId,
-  onExecuteSmartSearch,
-  isSmartSearching,
-  parsedIntent,
-  onClearSmartSearch,
-  onOpenWebhookModal,
-  onOpenDeveloperModal,
-  onToggleSidebar,
-  activeSearchQuery,
-  setActiveSearchQuery,
-  currentView = 'feed',
-  onSelectView,
-  alertCount = 0,
-  onRefresh,
-  loading = false,
-  notificationPermission = 'default',
-  onRequestNotificationPermission,
-  onLogout,
-  onOpenProfileModal,
-  currentTheme = 'obsidian',
-  onOpenThemeModal,
-}) => {
-  const [isFocused, setIsFocused] = useState(false);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement;
+      if (e.key === '/' && !['INPUT', 'TEXTAREA'].includes(t.tagName) && !t.isContentEditable) {
+        e.preventDefault();
+        inputRef.current?.focus();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (activeSearchQuery.trim()) {
-      onExecuteSmartSearch(activeSearchQuery);
-    }
-  };
-
-  const handleSelectSample = (sample: string) => {
-    setActiveSearchQuery(sample);
-    onExecuteSmartSearch(sample);
-  };
-
-  const activeAccount = accounts.find((a) => a.id === selectedAccountId);
+  const lastIso = p.lastSyncAt ? new Date(p.lastSyncAt).toISOString() : null;
 
   return (
-    <header 
-      id="dashboard-header"
-      className="h-14 bg-[#090a0f] border-b border-[#1a1d27] flex items-center justify-between px-4 z-20 flex-shrink-0 select-none"
-    >
-      {/* Left: Brand Identity & Toggle */}
-      <div className="flex items-center space-x-2 sm:space-x-3 flex-shrink-0">
-        {onToggleSidebar && (
-          <button
-            onClick={onToggleSidebar}
-            title="Toggle Sidebar"
-            className="p-1.5 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-[#151821] transition-colors"
-          >
-            <Menu className="w-4 h-4" />
-          </button>
-        )}
+    <header className="h-[68px] flex-shrink-0 flex items-center gap-3 md:gap-5 px-4 md:px-6 border-b border-[#161922] bg-[#0b0d12]/70 backdrop-blur-xl z-20">
+      <button className={`${iconButton} md:hidden`} onClick={p.onOpenMobileNav} aria-label="Menu">
+        <Menu className="w-5 h-5" />
+      </button>
 
-        <div className="flex items-center space-x-2">
-          <div className="w-7 h-7 rounded-lg bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400 flex-shrink-0">
-            <Sparkles className="w-3.5 h-3.5" />
+      <div className="hidden md:flex items-center gap-3 w-[230px] flex-shrink-0">
+        <div className="relative">
+          <div className="absolute inset-0 blur-lg bg-cyan-500/30 rounded-xl" />
+          <div className="relative w-9 h-9 rounded-xl bg-gradient-to-br from-cyan-400 to-violet-500 flex items-center justify-center">
+            <Mail className="w-[18px] h-[18px] text-zinc-950" strokeWidth={2.4} />
           </div>
-          <span className="font-semibold text-xs tracking-tight text-zinc-100 hidden sm:flex items-center gap-1.5">
-            <span>AetherMail</span>
-            <span className="text-[9px] uppercase font-mono px-1.5 py-0.2 rounded bg-[#11131a] text-amber-400 border border-amber-500/20">
-              OBSIDIAN
-            </span>
-          </span>
         </div>
-
-        {activeAccount && (
-          <div className="hidden xl:flex items-center gap-1.5 text-[10px] text-zinc-400 border-l border-[#1a1d27] pl-2.5 font-mono">
-            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
-            <span className="truncate max-w-[110px] text-zinc-300">
-              {activeAccount.email_address}
-            </span>
-          </div>
-        )}
+        <div className="leading-tight">
+          <div className="text-[15px] font-semibold tracking-tight text-zinc-50">AetherMail</div>
+          <div className="text-[11px] text-zinc-500 truncate">{p.user?.domain || 'command center'}</div>
+        </div>
       </div>
 
-      {/* Center: Gemini Natural Language Smart Search */}
-      <div className="flex-1 max-w-2xl mx-1 sm:mx-4">
-        <form onSubmit={handleSubmit} className="relative">
-          <div
-            className={`flex items-center bg-[#11131a] border rounded-xl px-3 py-1.5 transition-all shadow-sm ${
-              isFocused
-                ? 'border-amber-500/60 ring-1 ring-amber-500/20 bg-[#151821]'
-                : 'border-[#1a1d27] hover:border-[#262b3a]'
+      <form
+        className="flex-1 max-w-3xl"
+        onSubmit={(e) => {
+          e.preventDefault();
+          p.onSubmitSearch();
+        }}
+      >
+        <div className={`group flex items-center gap-2 rounded-2xl border px-3.5 h-11 transition ${p.aiSearch ? 'border-violet-500/40 bg-violet-500/[0.06]' : 'border-[#1f2331] bg-[#0f1117] focus-within:border-cyan-500/40'}`}>
+          {p.isSmartSearching ? <RefreshCw className="w-4 h-4 text-violet-300 animate-spin" /> : p.aiSearch ? <Sparkles className="w-4 h-4 text-violet-300" /> : <Search className="w-4 h-4 text-zinc-500" />}
+          <input
+            ref={inputRef}
+            value={p.search}
+            onChange={(e) => p.onSearchChange(e.target.value)}
+            onKeyDown={(e) => e.key === 'Escape' && (p.onClearSearch(), inputRef.current?.blur())}
+            placeholder={p.aiSearch ? 'Ask: "unpaid invoices from last week", "anything urgent from clients"…' : 'Search sender, subject, recipients…'}
+            className="flex-1 bg-transparent outline-none text-sm text-zinc-100 placeholder:text-zinc-600 min-w-0"
+          />
+          {p.search && (
+            <button type="button" onClick={p.onClearSearch} className="p-1 rounded-md text-zinc-500 hover:text-zinc-200">
+              <X className="w-3.5 h-3.5" />
+            </button>
+          )}
+          {!p.search && <span className="hidden lg:block"><Kbd>/</Kbd></span>}
+          <button
+            type="button"
+            onClick={p.onToggleAiSearch}
+            disabled={!p.aiAvailable}
+            title={p.aiAvailable ? 'Natural-language search (Gemini)' : 'Set GEMINI_API_KEY to enable AI search'}
+            className={`hidden sm:inline-flex items-center gap-1.5 text-[11px] font-mono px-2 py-1 rounded-lg border transition disabled:opacity-40 ${
+              p.aiSearch ? 'border-violet-400/50 bg-violet-500/15 text-violet-200' : 'border-[#262b3a] text-zinc-400 hover:text-zinc-200'
             }`}
           >
-            <div className="flex items-center space-x-1.5 text-amber-400 mr-2 flex-shrink-0">
-              <Sparkles className={`w-4 h-4 ${isSmartSearching ? 'animate-spin' : ''}`} />
-            </div>
-
-            <input
-              type="text"
-              value={activeSearchQuery}
-              onChange={(e) => setActiveSearchQuery(e.target.value)}
-              onFocus={() => setIsFocused(true)}
-              onBlur={() => setIsFocused(false)}
-              placeholder="Search with Gemini: 'Find urgent server alerts', 'Invoices due soon'..."
-              className="flex-1 bg-transparent text-xs text-zinc-100 placeholder-zinc-500 focus:outline-none"
-            />
-
-            {activeSearchQuery && (
-              <button
-                type="button"
-                onClick={() => {
-                  setActiveSearchQuery('');
-                  onClearSmartSearch();
-                }}
-                className="p-1 text-zinc-500 hover:text-zinc-300 rounded"
-              >
-                <X className="w-3.5 h-3.5" />
-              </button>
-            )}
-
-            <button
-              type="submit"
-              disabled={isSmartSearching || !activeSearchQuery.trim()}
-              className="ml-2 flex items-center space-x-1 px-2.5 py-1 rounded-lg bg-amber-500 hover:bg-amber-400 text-zinc-950 font-semibold text-[10px] uppercase font-mono transition-all disabled:opacity-40 flex-shrink-0"
-            >
-              <span>{isSmartSearching ? 'Parsing...' : 'Search'}</span>
-              <ArrowRight className="w-3 h-3" />
-            </button>
-          </div>
-        </form>
-      </div>
-
-      {/* Right: Telemetry & View Mode Switcher */}
-      <div className="flex items-center space-x-2 flex-shrink-0">
-        {/* Prominent Admin NOC Console View Switcher */}
-        {onSelectView && (
-          <div className="flex items-center p-0.5 rounded-lg bg-[#11131a] border border-[#1a1d27]">
-            <button
-              onClick={() => onSelectView('feed')}
-              className={`flex items-center space-x-1.5 px-3 py-1.5 rounded-md text-xs font-mono transition-all ${
-                currentView === 'feed'
-                  ? 'bg-amber-500/20 text-amber-300 font-bold border border-amber-500/30'
-                  : 'text-zinc-400 hover:text-zinc-200'
-              }`}
-            >
-              <span>Incident Feed</span>
-              {alertCount > 0 && (
-                <span className="w-1.5 h-1.5 rounded-full bg-rose-400 animate-pulse" />
-              )}
-            </button>
-
-            <button
-              onClick={() => onSelectView('developer')}
-              className={`flex items-center space-x-1.5 px-3 py-1.5 rounded-md text-xs font-mono transition-all font-semibold ${
-                currentView === 'developer'
-                  ? 'bg-amber-500 text-black font-extrabold border border-amber-400 shadow-md ring-1 ring-amber-400/40'
-                  : 'text-amber-400/90 hover:text-amber-300 hover:bg-amber-500/10'
-              }`}
-              title="Open Admin Dashboard & NOC Console (PayFast, Webhooks, Bot API)"
-            >
-              <Terminal className="w-3.5 h-3.5 flex-shrink-0" />
-              <span>⚡ Admin Dashboard</span>
-            </button>
-          </div>
-        )}
-
-        {/* Theme Switcher Button */}
-        {onOpenThemeModal && (
-          <button
-            onClick={onOpenThemeModal}
-            className="flex items-center space-x-1.5 px-2.5 py-1.5 rounded-lg bg-[#11131a] hover:bg-[#151821] border border-[#1a1d27] hover:border-[#262b3a] text-zinc-300 hover:text-zinc-100 text-xs transition-colors"
-            title="Theme Manager (Obsidian, Midnight, Navy, Matrix, Crimson)"
-          >
-            <Palette className="w-3.5 h-3.5 text-amber-400" />
-            <span className="text-[11px] font-mono hidden sm:inline capitalize">
-              {currentTheme}
-            </span>
+            <Sparkles className="w-3 h-3" /> AI
           </button>
-        )}
-
-        {/* Jarvis Desktop Notification & Audio Alert toggle */}
-        {onRequestNotificationPermission && (
-          <button
-            onClick={onRequestNotificationPermission}
-            className={`flex items-center space-x-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-mono transition-all ${
-              notificationPermission === 'granted'
-                ? 'bg-emerald-950/40 text-emerald-300 border-emerald-600/50 hover:bg-emerald-900/40'
-                : 'bg-amber-500/10 text-amber-300 border-amber-500/40 hover:bg-amber-500/20 animate-pulse'
-            }`}
-            title={
-              notificationPermission === 'granted'
-                ? 'Jarvis Desktop & Audio Alerts Active (Click to test chime)'
-                : 'Enable Jarvis Desktop Notifications & Audio Chimes'
-            }
-          >
-            <Bell className={`w-3.5 h-3.5 ${notificationPermission === 'granted' ? 'text-emerald-400' : 'text-amber-400'}`} />
-            <span className="text-[11px] hidden sm:inline">
-              {notificationPermission === 'granted' ? 'Jarvis Alerts: ON' : 'Enable Jarvis Alerts'}
-            </span>
-          </button>
-        )}
-
-        {/* Real-time live IMAP sync badge */}
-        <div 
-          className="hidden xl:flex items-center space-x-1.5 px-2 py-1 rounded-md bg-[#11131a] border border-[#1a1d27] text-[10px] text-zinc-400 font-mono"
-          title="Automated IMAP Multi-Account Sync active (20s interval + tab focus)"
-        >
-          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-          <span className="text-zinc-300">Live IMAP (20s)</span>
         </div>
+      </form>
 
-        {/* ntfy.sh status badge */}
-        <div 
-          className="hidden md:flex items-center space-x-1.5 px-2 py-1 rounded-md bg-[#11131a] border border-[#1a1d27] text-[10px] text-zinc-400 font-mono"
-          title="ntfy.sh instant push alerts active"
-        >
-          <BellRing className="w-3 h-3 text-rose-400 animate-pulse" />
-          <span className="text-zinc-300">ntfy.sh</span>
-        </div>
-
-        {/* Sync / Refresh button */}
-        {onRefresh && (
-          <button
-            onClick={onRefresh}
-            disabled={loading}
-            className="flex items-center space-x-1.5 px-2.5 py-1.5 rounded-lg bg-[#11131a] hover:bg-[#151821] border border-[#1a1d27] hover:border-[#262b3a] text-zinc-300 hover:text-zinc-100 text-xs transition-colors disabled:opacity-50"
-            title="Sync & Pull Latest Emails"
-          >
-            <RefreshCw className={`w-3.5 h-3.5 text-amber-400 ${loading ? 'animate-spin' : ''}`} />
-            <span className="text-[11px] font-mono hidden sm:inline">{loading ? 'Syncing...' : 'Sync'}</span>
-          </button>
-        )}
-
-        {/* Ingestion webhook shortcut */}
+      <div className="flex items-center gap-2 ml-auto">
         <button
-          onClick={onOpenWebhookModal}
-          className="hidden lg:flex items-center space-x-1.5 px-2.5 py-1.5 rounded-lg bg-[#11131a] hover:bg-[#151821] border border-[#1a1d27] hover:border-[#262b3a] text-zinc-300 hover:text-zinc-100 text-xs transition-colors"
-          title="Simulate External Ingestion Webhook"
+          onClick={p.onOpenHealth}
+          className="hidden lg:flex items-center gap-2 h-9 px-3 rounded-xl border border-[#1f2331] bg-[#0f1117] text-xs hover:border-[#2a3042] transition"
+          title="Sync health"
         >
-          <Send className="w-3 h-3 text-amber-400" />
-          <span className="text-[11px]">Webhook</span>
-        </button>
-
-        {/* User Profile Pill & Quick Logout */}
-        <div className="flex items-center space-x-1 pl-1 border-l border-[#1a1d27]">
-          {onOpenProfileModal && (
-            <button
-              onClick={onOpenProfileModal}
-              className="flex items-center space-x-1.5 px-2.5 py-1.5 rounded-lg bg-[#11131a] hover:bg-[#151821] border border-[#1a1d27] hover:border-[#262b3a] text-zinc-200 text-xs transition-colors"
-              title="Manage Profile & Identity"
-            >
-              <div className="w-4 h-4 rounded-full bg-gradient-to-tr from-amber-500 to-amber-300 flex items-center justify-center text-[9px] font-extrabold text-black flex-shrink-0">
-                M
-              </div>
-              <span className="font-mono text-[11px] hidden sm:inline">mraaziqp</span>
-              <span className="text-[8px] font-mono px-1 py-0.2 rounded bg-emerald-950 text-emerald-300 border border-emerald-800 hidden md:inline font-bold">
-                ADMIN
+          {!p.online ? (
+            <>
+              <WifiOff className="w-3.5 h-3.5 text-rose-400" />
+              <span className="text-rose-300">Offline</span>
+            </>
+          ) : (
+            <>
+              <span className="relative flex w-2 h-2">
+                <span className={`absolute inline-flex h-full w-full rounded-full opacity-60 ${p.syncing ? 'bg-cyan-400 animate-ping' : 'bg-emerald-400 animate-ping [animation-duration:2.5s]'}`} />
+                <span className={`relative inline-flex w-2 h-2 rounded-full ${p.syncing ? 'bg-cyan-400' : 'bg-emerald-400'}`} />
               </span>
-            </button>
+              <span className="text-zinc-300 font-medium">{p.liveMode === 'push' ? 'Live push' : 'Live'}</span>
+              <span className="text-zinc-500 font-mono">{p.syncing ? 'syncing…' : relativeTime(lastIso, p.now)}</span>
+            </>
           )}
-
-          {onLogout && (
-            <button
-              onClick={onLogout}
-              className="p-1.5 rounded-lg bg-[#11131a] hover:bg-rose-950/40 text-zinc-400 hover:text-rose-300 border border-[#1a1d27] hover:border-rose-900/50 transition-colors"
-              title="Secure Terminal Logout"
-            >
-              <LogOut className="w-3.5 h-3.5" />
-            </button>
-          )}
-        </div>
+        </button>
+        <button className={iconButton} onClick={p.onSyncNow} title="Sync now (Shift+R)" disabled={p.syncing}>
+          <RefreshCw className={`w-[18px] h-[18px] ${p.syncing ? 'animate-spin text-cyan-300' : ''}`} />
+        </button>
+        <button className={iconButton} onClick={p.onToggleNotifications} title={p.notificationsOn ? 'Desktop alerts on' : 'Enable desktop alerts'}>
+          {p.notificationsOn ? <Bell className="w-[18px] h-[18px] text-cyan-300" /> : <BellOff className="w-[18px] h-[18px]" />}
+        </button>
+        {p.user && (
+          <div className="hidden sm:flex items-center gap-2.5 pl-2 ml-1 border-l border-[#1a1d27]">
+            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-zinc-700 to-zinc-800 border border-white/5 flex items-center justify-center text-sm font-semibold text-zinc-200">
+              {p.user.displayName[0]?.toUpperCase()}
+            </div>
+          </div>
+        )}
       </div>
     </header>
   );
-};
+}
