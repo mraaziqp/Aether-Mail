@@ -4,9 +4,10 @@ import { db } from '../db/index.ts';
 import { emails, accounts, api_keys, domains, mailboxes, agent_keys, type NewApiKey, type NewDomain, type NewMailbox, type NewAccount, type NewEmail } from '../db/schema.ts';
 import { eq, and, desc, gte, sql } from 'drizzle-orm';
 import { requireApiKey, generateNewApiKey } from '../lib/api-auth.ts';
+import { requireSessionOrApiKey } from './auth.ts';
 import { sendEmailAction } from '../app/actions/send-email.ts';
 import { generateDkimKeyPair, buildDomainDnsRecords } from '../lib/dkim.ts';
-import { provisionStalwartDomain, provisionStalwartMailbox, dispatchViaStalwartSmtp } from '../lib/stalwart.ts';
+import { provisionStalwartDomain, provisionStalwartMailbox } from '../lib/stalwart.ts';
 import { requireAgentScope, ensureJarvisRootKey, generateAgentKey } from '../lib/agent-auth.ts';
 
 export const v1Router = Router();
@@ -142,7 +143,7 @@ v1Router.get('/emails/:id', requireApiKey('read'), async (req: Request, res: Res
  */
 v1Router.post('/emails/send', requireApiKey('send'), async (req: Request, res: Response) => {
   try {
-    const { accountId, to, subject, htmlBody } = req.body;
+    const { accountId, to, cc, bcc, subject, htmlBody, inReplyToId } = req.body;
 
     if (!to || !subject || !htmlBody) {
       return res.status(400).json({
@@ -168,8 +169,11 @@ v1Router.post('/emails/send', requireApiKey('send'), async (req: Request, res: R
     const result = await sendEmailAction({
       accountId: targetAccountId,
       to,
+      cc,
+      bcc,
       subject,
       htmlBody,
+      inReplyToId,
     });
 
     if (!result.success) {
@@ -235,7 +239,7 @@ v1Router.patch('/emails/:id', requireApiKey('write'), async (req: Request, res: 
  * GET /api/v1/keys
  * List active API Keys (safe display without key_hash)
  */
-v1Router.get('/keys', async (_req: Request, res: Response) => {
+v1Router.get('/keys', requireSessionOrApiKey('admin'), async (_req: Request, res: Response) => {
   try {
     const keys = await db
       .select({
@@ -270,7 +274,7 @@ v1Router.get('/keys', async (_req: Request, res: Response) => {
  * POST /api/v1/keys
  * Create and register a new scoped API Key
  */
-v1Router.post('/keys', async (req: Request, res: Response) => {
+v1Router.post('/keys', requireSessionOrApiKey('admin'), async (req: Request, res: Response) => {
   try {
     const { name, scopes } = req.body;
     if (!name || typeof name !== 'string') {
@@ -322,7 +326,7 @@ v1Router.post('/keys', async (req: Request, res: Response) => {
  * DELETE /api/v1/keys/:id
  * Revoke an API Key
  */
-v1Router.delete('/keys/:id', async (req: Request, res: Response) => {
+v1Router.delete('/keys/:id', requireSessionOrApiKey('admin'), async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const deleted = await db
@@ -351,14 +355,21 @@ v1Router.delete('/keys/:id', async (req: Request, res: Response) => {
  * GET /api/v1/metrics
  * System & API metrics for developer dashboard
  */
-v1Router.get('/metrics', async (_req: Request, res: Response) => {
+v1Router.get('/metrics', requireSessionOrApiKey('admin'), async (_req: Request, res: Response) => {
   try {
-    const allEmails = await db.select().from(emails);
-    const allKeys = await db.select().from(api_keys);
-    const allAccs = await db.select().from(accounts);
-
-    const unreadCount = allEmails.filter((e) => !e.is_read).length;
-    const alertCount = allEmails.filter((e) => e.requires_alert).length;
+    const [totals] = await db
+      .select({
+        total: sql<number>`count(*)::int`,
+        unread: sql<number>`count(*) filter (where ${emails.is_read} = false)::int`,
+        alerts: sql<number>`count(*) filter (where ${emails.requires_alert} = true)::int`,
+      })
+      .from(emails);
+    const byCategory = await db
+      .select({ category: emails.category, n: sql<number>`count(*)::int` })
+      .from(emails)
+      .groupBy(emails.category);
+    const [keyCount] = await db.select({ n: sql<number>`count(*)::int` }).from(api_keys);
+    const allAccs = await db.select({ sync_status: accounts.sync_status }).from(accounts);
 
     const categoryDistribution: Record<string, number> = {
       urgent: 0,
@@ -367,13 +378,13 @@ v1Router.get('/metrics', async (_req: Request, res: Response) => {
       personal: 0,
       newsletter: 0,
       automated: 0,
+      spam: 0,
     };
-
-    for (const em of allEmails) {
-      if (categoryDistribution[em.category] !== undefined) {
-        categoryDistribution[em.category]++;
-      }
-    }
+    for (const row of byCategory) categoryDistribution[row.category] = row.n;
+    const allEmails = { length: totals.total };
+    const unreadCount = totals.unread;
+    const alertCount = totals.alerts;
+    const allKeys = { length: keyCount.n };
 
     return res.json({
       success: true,
@@ -404,7 +415,7 @@ v1Router.get('/metrics', async (_req: Request, res: Response) => {
  * POST /api/v1/admin/domains
  * Register domain, generate 2048-bit DKIM keypair, and return registrar DNS records
  */
-v1Router.post('/admin/domains', async (req: Request, res: Response) => {
+v1Router.post('/admin/domains', requireSessionOrApiKey('admin'), async (req: Request, res: Response) => {
   try {
     const { domain_name } = req.body;
     if (!domain_name || typeof domain_name !== 'string') {
@@ -481,7 +492,7 @@ v1Router.post('/admin/domains', async (req: Request, res: Response) => {
  * GET /api/v1/admin/domains
  * List registered domains with DNS bundle
  */
-v1Router.get('/admin/domains', async (_req: Request, res: Response) => {
+v1Router.get('/admin/domains', requireSessionOrApiKey('admin'), async (_req: Request, res: Response) => {
   try {
     const allDomains = await db.select().from(domains).orderBy(desc(domains.created_at));
     const enriched = allDomains.map((d) => {
@@ -513,7 +524,7 @@ v1Router.get('/admin/domains', async (_req: Request, res: Response) => {
  * POST /api/v1/admin/mailboxes
  * Provision virtual mailbox user in Stalwart and record in PostgreSQL
  */
-v1Router.post('/admin/mailboxes', async (req: Request, res: Response) => {
+v1Router.post('/admin/mailboxes', requireSessionOrApiKey('admin'), async (req: Request, res: Response) => {
   try {
     const { domain_id, email_address, password } = req.body;
     if (!email_address || !email_address.includes('@')) {
@@ -609,7 +620,7 @@ v1Router.post('/admin/mailboxes', async (req: Request, res: Response) => {
  * GET /api/v1/admin/mailboxes
  * List provisioned virtual mailboxes
  */
-v1Router.get('/admin/mailboxes', async (req: Request, res: Response) => {
+v1Router.get('/admin/mailboxes', requireSessionOrApiKey('admin'), async (req: Request, res: Response) => {
   try {
     const domainId = req.query.domain_id as string | undefined;
     let query = db
@@ -652,7 +663,7 @@ v1Router.get('/admin/mailboxes', async (req: Request, res: Response) => {
  * POST /api/v1/agent/provision-jarvis
  * Returns or provisions the Jarvis master root key
  */
-v1Router.post('/agent/provision-jarvis', async (_req: Request, res: Response) => {
+v1Router.post('/agent/provision-jarvis', requireSessionOrApiKey('admin'), async (_req: Request, res: Response) => {
   try {
     const result = await ensureJarvisRootKey();
     return res.json({
@@ -800,73 +811,42 @@ v1Router.post('/agent/dispatch', requireAgentScope('send_as_any'), async (req: R
       });
     }
 
-    const defaultSender = process.env.JARVIS_DEFAULT_SENDER || 'jarvis@aethermail.com';
-    const sender = (from || defaultSender).trim();
-    const recipient = Array.isArray(to) ? to.join(', ') : to.trim();
+    const defaultSender = process.env.JARVIS_DEFAULT_SENDER?.trim() || process.env.AETHERMAIL_SENDER?.trim();
+    const sender = String(from || defaultSender || '').trim();
+    if (!sender) {
+      return res.status(400).json({
+        success: false,
+        error: 'No sender: pass "from" or set JARVIS_DEFAULT_SENDER / AETHERMAIL_SENDER.',
+      });
+    }
 
-    const dispatchResult = await dispatchViaStalwartSmtp({
-      from: sender,
+    const result = await sendEmailAction({
+      accountId: sender,
       to,
       subject,
       htmlBody,
-      textBody,
-      replyTo,
+      inReplyToId: typeof req.body.in_reply_to === 'string' ? req.body.in_reply_to : undefined,
+      fromName: 'Jarvis',
     });
 
-    const messageId = dispatchResult.messageId || `msg_jrv_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-    const threadId = thread_id || `th_${Date.now()}`;
-    const snippet = textBody || htmlBody.replace(/<[^>]*>/g, '').slice(0, 140).trim();
-
-    const [existingAcc] = await db
-      .select()
-      .from(accounts)
-      .where(eq(accounts.email_address, sender))
-      .limit(1);
-
-    const accountId = existingAcc ? existingAcc.id : `acc_agent_${Date.now()}`;
-    if (!existingAcc) {
-      await db
-        .insert(accounts)
-        .values({
-          id: accountId,
-          provider: 'stalwart',
-          email_address: sender,
-          sync_status: 'synced',
-          created_at: new Date(),
-        })
-        .onConflictDoNothing();
+    if (!result.success) {
+      return res.status(502).json({ success: false, error: result.error, attempts: result.attempts });
     }
-
-    const newRecord: NewEmail = {
-      id: messageId,
-      account_id: accountId,
-      thread_id: threadId,
-      subject,
-      sender: `Jarvis <${sender}>`,
-      body_snippet: snippet,
-      full_body: htmlBody,
-      category: 'work',
-      ai_summary: `Autonomous response dispatched by Jarvis to ${recipient}`,
-      requires_alert: false,
-      is_read: true,
-      received_at: new Date(),
-    };
-
-    await db.insert(emails).values(newRecord).onConflictDoNothing();
 
     return res.json({
       success: true,
-      message: 'Email dispatched via Stalwart SMTP relay and logged to database.',
+      message: `Email accepted by ${result.provider}.`,
       agent: (req as any).agent?.botName,
       data: {
-        message_id: messageId,
+        message_id: result.messageId,
         from: sender,
-        to: recipient,
+        to: Array.isArray(to) ? to.join(', ') : String(to),
         subject,
-        transport: 'stalwart-smtp',
-        dispatched_at: new Date().toISOString(),
-        relay_status: dispatchResult.success ? 'delivered' : 'queued_or_fallback',
-        error: dispatchResult.error,
+        transport: result.provider,
+        dispatched_at: result.dispatchedAt,
+        thread_id: thread_id ?? null,
+        reply_to: replyTo ?? null,
+        text_body_ignored: Boolean(textBody),
       },
     });
   } catch (error) {
@@ -881,9 +861,9 @@ v1Router.post('/agent/dispatch', requireAgentScope('send_as_any'), async (req: R
 /**
  * Direct Gmail IMAP Sync: Fetches real inbox messages using Google App Passwords
  */
-v1Router.post('/sync/gmail', async (req: Request, res: Response) => {
+v1Router.post('/sync/gmail', requireSessionOrApiKey('admin'), async (req: Request, res: Response) => {
   try {
-    const { email_address, app_password, limit } = req.body;
+    const { email_address, app_password, imap_host, imap_port } = req.body;
     if (!email_address || !app_password) {
       return res.status(400).json({
         success: false,
@@ -891,22 +871,21 @@ v1Router.post('/sync/gmail', async (req: Request, res: Response) => {
       });
     }
 
-    const { syncImapAccount } = await import('../lib/imap-sync.ts');
-    const result = await syncImapAccount(email_address, app_password, limit || 20);
-
-    if (!result.success) {
+    const { connectMailbox } = await import('../lib/mailbox-service.ts');
+    try {
+      const { report } = await connectMailbox({ email_address, password: app_password, imap_host, imap_port });
+      return res.json({
+        success: true,
+        message: `Connected ${email_address}; imported ${report?.imported ?? 0} message(s). It will keep syncing automatically.`,
+        imported: report?.imported ?? 0,
+        email_address,
+      });
+    } catch (connectErr) {
       return res.status(400).json({
         success: false,
-        error: result.error || 'Failed to authenticate or sync with the IMAP server.',
+        error: connectErr instanceof Error ? connectErr.message : 'Failed to connect mailbox.',
       });
     }
-
-    return res.json({
-      success: true,
-      message: `Successfully synchronized ${result.imported} messages from ${email_address}.`,
-      imported: result.imported,
-      email_address,
-    });
   } catch (err) {
     console.error('v1 POST /sync/gmail error:', err);
     return res.status(500).json({
