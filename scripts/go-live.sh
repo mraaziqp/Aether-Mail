@@ -30,6 +30,8 @@ DOMAIN="${DOMAIN:-arpcloudsolutions.co.za}"
 APP_HOST="${APP_HOST:-aethermail.${DOMAIN}}"
 APP_URL="https://${APP_HOST}"
 VERCEL_PROJECT="${VERCEL_PROJECT:-aethermail}"
+# Team that owns the project (from the Vercel preview on the PR).
+VERCEL_SCOPE="${VERCEL_SCOPE:-moparks-projects-5fd3a0cd}"
 RESEND_REGION="${RESEND_REGION:-us-east-1}"
 RESEND_API="${RESEND_API_URL:-https://api.resend.com}"
 BUSINESS_NAME="${BUSINESS_NAME:-ARP Cloud Solutions}"
