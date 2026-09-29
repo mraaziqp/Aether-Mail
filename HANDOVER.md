@@ -30,36 +30,46 @@ Neon — all three of which it depended on before, which is why it kept breaking
 
 ### Done
 
-- IMAP sync is provider-agnostic (`src/lib/imap-sync.ts`). It was hardcoded to
-  `imap.gmail.com`, and the unified sync in `server.ts` gated on
-  `email_address.includes('@gmail.com')` — so business mailboxes were silently
-  skipped, which is the entire point of the feature.
-- Certificate verification re-enabled on IMAP (`rejectUnauthorized` was `false`).
-- Hardcoded credential fallbacks removed from the send path and the committed
-  `api/index.js` bundle.
-- Route 53 tooling written and smoke-tested: `Consolidated-Hub/scripts/dns/`.
-- `tsc --noEmit` clean.
+- **Security.** Every console route now requires a signed, HttpOnly session
+  (`src/server/auth.ts`); previously *all* of `/api` was open, including
+  `/api/v1/keys` (mint an admin key) and `/api/v1/agent/provision-jarvis`.
+  `ADMIN_PASSWORD` has no default (the literal `114477` is gone), the PayFast
+  merchant-key fallback is gone, the fake "PayFast reset notice / PIN"
+  generator and the committed PayFast activation token are removed, PayFast
+  ITNs are confirmed with PayFast before being stored, and `/api/accounts` no
+  longer returns stored mailbox passwords to the browser.
+- **Sync rebuilt** (`src/lib/imap-sync.ts`, `src/lib/sync-runner.ts`):
+  incremental by IMAP UID with per-folder state (`sync_state`), UIDVALIDITY
+  resets handled, parallel accounts, a database lease so tabs / cron / IDLE never
+  double-process, per-mailbox dedupe (one message in two mailboxes keeps both
+  copies), Inbox + Spam + Sent, forwarded mail routed to the right mailbox, and
+  IMAP IDLE push when running long-lived.
+- **Mailbox passwords persist**, AES-256-GCM sealed with `APP_SECRET`
+  (`src/lib/secrets.ts`). Connecting in the UI verifies the login first.
+- **Sending** (`src/app/actions/send-email.ts`): Resend HTTP API → mailbox's own
+  SMTP → SMTP relay → Gmail relay, reporting every failed route. Replies carry
+  `In-Reply-To` / `References`. Jarvis dispatch no longer reports success for
+  mail that failed.
+- **Optional Resend inbound** webhook with Svix signature verification.
+- **Schema self-migrates** on first request (`src/db/ensure-schema.ts`).
+- **UI rewritten**: spacious three-pane layout, live sync indicator, sync
+  health panel, threads, inline reply with AI draft, keyboard shortcuts,
+  desktop alerts, mobile layout, installable as an app.
+- **5-minute scheduler** for serverless: `.github/workflows/mail-sync.yml`.
+- `Consolidated-Hub/scripts/dns/add-verification.sh resend-send` — the `send.`
+  MX/SPF records Resend needs, which the DNS plan was missing.
 
-### Not done — this is the actual remaining work
+### Not done — needs your accounts (see BUSINESS-MAIL.md, steps 1–6)
 
-1. **Apply the DNS records.** Blocked only on an AWS session.
-2. **Create the Zoho account and mailboxes.** Manual; needs a human.
-3. **Verify the domain in Resend** and apply its DKIM.
-4. **Point `DATABASE_URL` at a Neon project with headroom.** The current one is
-   over quota — that is the 500 on `/api/emails` while `/api/health` returns 200.
-   Mohammed has a paid Neon account; ask him which project, do not go hunting
-   for a connection string.
-
-   Once the schema is pushed (`npx drizzle-kit push`), existing local data can be
-   copied across:
-
-   ```bash
-   NEON_TARGET_URL="postgresql://…" npx tsx scripts/sync-to-neon.ts
-   ```
-
-   `DATABASE_URL` stays pointed at the local source; `NEON_TARGET_URL` is the
-   destination.
-5. **Rotate the leaked credentials** (see the warning at the bottom).
+1. **Apply DNS** (`aws login`, then `apply-dns.sh --apply`).
+2. **Zoho**: account, domain verification, `contact@` + aliases, DKIM, IMAP on,
+   app password. Confirm the plan includes IMAP.
+3. **Resend**: add + verify the domain (DKIM + `send.` records).
+4. **Vercel**: env vars (`DATABASE_URL` on a Neon project with headroom,
+   `ADMIN_PASSWORD`, `APP_SECRET`, `CRON_SECRET`, `RESEND_API_KEY`, …) and the
+   `aethermail.arpcloudsolutions.co.za` domain.
+5. **GitHub secrets** `AETHERMAIL_URL` + `CRON_SECRET` for the sync workflow.
+6. **Rotate the leaked credentials** (see the warning at the bottom).
 
 ---
 
@@ -175,10 +185,18 @@ Live credentials were committed and pushed to GitHub:
 - **A Neon database password** in `mraaziqp/VerifiedBizLink`'s `.env.example`,
   which is a *tracked* file, plus `||` fallbacks in `scripts/*.js` there.
 
+- **The PayFast merchant key** was hardcoded in `server.ts` and displayed (with
+  a copy button) in the Developer Console, so it was in every browser bundle the
+  public deployment served. A PayFast account-activation link with its token
+  was also committed. Both are removed from source.
+- **The admin password** `114477` was a literal fallback, and the API had no
+  authentication at all — assume anything the old deployment held was readable.
+
 The working trees are clean now, but **the values remain in git history and must
 be rotated at the provider** — cleaning the source is not the fix. Revoke the
 Gmail app passwords at <https://myaccount.google.com/apppasswords>, reset the
-Neon role password, then update `.env` and the Vercel `aethermail` project.
+Neon role password, regenerate the PayFast merchant key (and set a passphrase)
+in the PayFast dashboard, then update `.env` and the Vercel `aethermail` project.
 
 A literal fallback does two kinds of damage: it publishes a working credential,
 and it makes a missing env var look like working configuration until the day the

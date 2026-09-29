@@ -1,78 +1,42 @@
-# AetherMail — AI Unified NOC Inbox & Autonomous Bot Command Center
+# AetherMail
 
-AetherMail is an enterprise-grade Network Operations Center (NOC) email client and incident triage platform. Tailored for infrastructure engineers, DevOps teams, and autonomous AI agents, it unifies multi-account streams with sub-second Gemini 2.5 Flash threat classification, instant P0 alert dispatch via `ntfy.sh`, and root programmatic REST access for autonomous bots.
+A unified mail console for business and personal mailboxes: live sync from any
+IMAP server, sending through Resend, AI triage, and a bot/agent REST API.
 
----
+**Setting up business mail for arpcloudsolutions.co.za? Start with
+[BUSINESS-MAIL.md](./BUSINESS-MAIL.md).** Deployment is in [DEPLOY.md](./DEPLOY.md).
 
-## Key Capabilities
+## Key capabilities
 
-- **Obsidian Dark NOC Command Center**: High-density interface (`#090a0f`) with Geist/Inter typography, monospace latency gauges, and instant category triage (`urgent`, `action_needed`, `financial`, `security`).
-- **Inspection Drawer**: Split-pane view providing raw email rendering alongside Gemini metadata, threat urgency index (0–100), automated checklist extraction, and 1-click smart reply dispatch.
-- **Root Access Bot Engine (`/api/v1`)**: Secure REST API enabling autonomous agents (CLI bots, PagerDuty triage bots, CI/CD workers) to query incidents, triage message threads, and dispatch outbound emails.
-- **Cryptographic Bot Key Management**: SHA-256 hashed API keys with `ops_...` prefix, granular scope enforcement (`read`, `write`, `send`, `admin`), one-time secret reveals, and instant revocation.
-- **Real-time Ingestion Gateway**: Webhook receiver (`/api/webhooks/email`) with pre-configured IT incident presets (Kubernetes OOMKills, SSH brute-force attacks, cloud billing alarms).
+- **Live, incremental sync** of any IMAP mailbox (Zoho, Gmail, Microsoft 365, …):
+  Inbox, Spam and Sent, IDLE push on a long-running server, a 5-minute scheduler
+  on Vercel, per-mailbox health telemetry.
+- **Reliable sending**: Resend API first, then the mailbox's own SMTP, a relay,
+  and Gmail — with threading headers and an honest report of which route worked.
+- **Secure by default**: signed HttpOnly sessions, encrypted stored mailbox
+  passwords, no credential fallbacks in code.
+- **AI triage** (Gemini, optional): categories, one-line summaries, smart reply,
+  natural-language search.
+- **Bot API** (`/api/v1`): scoped, SHA-256-hashed API keys for agents.
 
----
+## Local development
 
-## Local Setup & Development (WSL2 + Docker)
-
-### 1. Prerequisites
-- **Windows 11 / WSL2 (Ubuntu 22.04+)** or macOS / Linux.
-- **Docker Desktop** (with WSL2 integration enabled).
-- **Node.js 20+** and **npm**.
-
-### 2. Clone and Install Dependencies
 ```bash
-git clone <your-repo-url> aethermail
-cd aethermail
 npm install
+cp .env.example .env     # set DATABASE_URL, ADMIN_PASSWORD, APP_SECRET at minimum
+docker compose up -d postgres
+npm run dev              # http://localhost:3007
 ```
 
-### 3. Spin Up Local Services (Postgres, Redis, EmailEngine)
-A complete `docker-compose.yml` is provided at the root for running local PostgreSQL and EmailEngine:
-```bash
-docker compose up -d
-```
-This boots:
-- **PostgreSQL 16** on `localhost:5432` (`postgres:postgrespassword`).
-- **Redis 7** on `localhost:6379`.
-- **EmailEngine** on `localhost:3001` (webhooks routed to `http://host.docker.internal:3000/api/webhooks/email`).
+The database schema is created automatically. `npm run db:push` and
+`npm run db:studio` still work for inspection.
 
-### 4. Configure Environment Variables
-Copy `.env.example` to `.env`:
-```bash
-cp .env.example .env
-```
-Fill in your configuration:
-```env
-DATABASE_URL="postgresql://postgres:postgrespassword@localhost:5432/aethermail?sslmode=disable"
-GEMINI_API_KEY="AIzaSyYourGeminiApiKeyHere"
-APP_URL="http://localhost:3000"
-NTFY_TOPIC="aethermail-noc-alerts"
-EMAIL_SYNC_API_URL="http://localhost:3001/v1/messages/send"
-```
+## Keyboard shortcuts
 
-### 5. Push Database Schema
-Push the Drizzle ORM schema (`src/db/schema.ts`) to your PostgreSQL instance:
-```bash
-npm run db:push
-```
-To visually inspect tables via Drizzle Studio:
-```bash
-npm run db:studio
-```
+`j`/`k` next/previous · `r` reply · `c` compose · `u` read/unread ·
+`#` delete · `/` search · `Shift+R` sync now · `Esc` clear
 
-### 6. Start Development Server
-```bash
-npm run dev
-```
-Open [http://localhost:3000](http://localhost:3000) in your browser.
-
----
-
-## Generating Root Bot Keys from Developer Console
-
-1. Navigate to the top header and click **Developer & Agents** (or select **Bot & Agent API (v1)** in the sidebar).
+*Bot & Agent API (v1)** in the sidebar).
 2. Open the **API Key Management** tab.
 3. Enter a descriptive service name (e.g. `k8s-remediation-bot`, `pagerduty-worker`).
 4. Select the granted scopes (`read`, `write`, `send`, `admin`).
