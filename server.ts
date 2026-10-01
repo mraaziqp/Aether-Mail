@@ -294,6 +294,16 @@ export async function createApp() {
     })
   );
 
+  app.get(
+    '/api/contacts',
+    asyncRoute(async (req, res) => {
+      const { getContacts } = await import('./src/lib/contacts.ts');
+      const q = typeof req.query.q === 'string' ? req.query.q : undefined;
+      const limit = Number(req.query.limit) || 50;
+      res.json(await getContacts(q, limit));
+    })
+  );
+
   app.post(
     '/api/accounts/connect',
     asyncRoute(async (req, res) => {

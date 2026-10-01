@@ -9,6 +9,7 @@ import { sendEmailAction } from '../app/actions/send-email.ts';
 import { generateDkimKeyPair, buildDomainDnsRecords } from '../lib/dkim.ts';
 import { provisionStalwartDomain, provisionStalwartMailbox } from '../lib/stalwart.ts';
 import { requireAgentScope, ensureJarvisRootKey, generateAgentKey, setOrUpdateJarvisKey, getJarvisKeyStatus } from '../lib/agent-auth.ts';
+import { getContacts } from '../lib/contacts.ts';
 
 export const v1Router = Router();
 
@@ -133,6 +134,25 @@ v1Router.get('/emails/:id', requireApiKey('read'), async (req: Request, res: Res
     return res.status(500).json({
       success: false,
       error: error instanceof Error ? error.message : 'Failed to fetch email',
+    });
+  }
+});
+
+/**
+ * GET /api/v1/contacts
+ * Returns aggregated contacts directory for bots and UI autocomplete
+ */
+v1Router.get('/contacts', requireApiKey('read'), async (req: Request, res: Response) => {
+  try {
+    const q = typeof req.query.q === 'string' ? req.query.q : undefined;
+    const limit = Number(req.query.limit) || 50;
+    const contacts = await getContacts(q, limit);
+    return res.json({ success: true, count: contacts.length, data: contacts });
+  } catch (error) {
+    console.error('v1 GET /contacts error:', error);
+    return res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Failed to fetch contacts',
     });
   }
 });

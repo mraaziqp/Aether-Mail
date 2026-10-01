@@ -131,3 +131,10 @@ export interface SystemMetrics {
   syncStatus: string;
   lastUpdated: string;
 }
+
+export interface ContactItem {
+  email: string;
+  name: string | null;
+  count: number;
+  isAccount?: boolean;
+}

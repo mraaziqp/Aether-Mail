@@ -41,5 +41,12 @@ export async function ensureBusinessMailboxes() {
         sync_status: 'synced',
       }))
     )
-    .onConflictDoNothing();
+    .onConflictDoUpdate({
+      target: accounts.email_address,
+      set: {
+        provider: 'resend',
+        sync_status: 'synced',
+        last_sync_error: null,
+      },
+    });
 }

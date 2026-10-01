@@ -228,7 +228,14 @@ async function ensureBusinessMailboxes() {
       display_name: i === 0 ? name : null,
       sync_status: "synced"
     }))
-  ).onConflictDoNothing();
+  ).onConflictDoUpdate({
+    target: accounts.email_address,
+    set: {
+      provider: "resend",
+      sync_status: "synced",
+      last_sync_error: null
+    }
+  });
 }
 var init_business_mailboxes = __esm({
   "src/lib/business-mailboxes.ts"() {
@@ -490,6 +497,68 @@ async function storeEmail(rec) {
 }
 var init_store_email = __esm({
   "src/lib/store-email.ts"() {
+    init_db();
+    init_schema();
+  }
+});
+
+// src/lib/contacts.ts
+var contacts_exports = {};
+__export(contacts_exports, {
+  getContacts: () => getContacts
+});
+function parseContactsFromHeader(raw) {
+  if (!raw) return [];
+  const results = [];
+  const regex = /(?:(?:"?([^"<,;\n]+)"?)\s*)?<([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})>|([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/g;
+  let match;
+  while ((match = regex.exec(raw)) !== null) {
+    const name = (match[1] || "").trim();
+    const email = (match[2] || match[3] || "").trim().toLowerCase();
+    if (email && email.includes("@")) {
+      results.push({ name: name || null, email });
+    }
+  }
+  return results;
+}
+async function getContacts(query, limit = 50) {
+  const accs = await db.select().from(accounts);
+  const contactsMap = /* @__PURE__ */ new Map();
+  for (const a of accs) {
+    contactsMap.set(a.email_address.toLowerCase(), {
+      email: a.email_address.toLowerCase(),
+      name: a.display_name || null,
+      count: 100,
+      isAccount: true
+    });
+  }
+  const rows = await db.select({
+    sender: emails.sender,
+    recipients: emails.recipients
+  }).from(emails).limit(1e3);
+  for (const r of rows) {
+    for (const c of parseContactsFromHeader(r.sender)) {
+      const existing = contactsMap.get(c.email) || { email: c.email, name: c.name, count: 0, isAccount: false };
+      if (!existing.name && c.name) existing.name = c.name;
+      existing.count++;
+      contactsMap.set(c.email, existing);
+    }
+    for (const c of parseContactsFromHeader(r.recipients)) {
+      const existing = contactsMap.get(c.email) || { email: c.email, name: c.name, count: 0, isAccount: false };
+      if (!existing.name && c.name) existing.name = c.name;
+      existing.count++;
+      contactsMap.set(c.email, existing);
+    }
+  }
+  let list = Array.from(contactsMap.values()).sort((a, b) => b.count - a.count);
+  if (query?.trim()) {
+    const q = query.trim().toLowerCase();
+    list = list.filter((c) => c.email.toLowerCase().includes(q) || c.name && c.name.toLowerCase().includes(q));
+  }
+  return list.slice(0, Math.max(1, Math.min(limit, 200)));
+}
+var init_contacts = __esm({
+  "src/lib/contacts.ts"() {
     init_db();
     init_schema();
   }
@@ -2463,6 +2532,7 @@ async function getJarvisKeyStatus() {
 }
 
 // src/server/v1-router.ts
+init_contacts();
 var v1Router = Router();
 v1Router.get("/emails", requireApiKey("read"), async (req, res) => {
   try {
@@ -2553,6 +2623,20 @@ v1Router.get("/emails/:id", requireApiKey("read"), async (req, res) => {
     return res.status(500).json({
       success: false,
       error: error instanceof Error ? error.message : "Failed to fetch email"
+    });
+  }
+});
+v1Router.get("/contacts", requireApiKey("read"), async (req, res) => {
+  try {
+    const q = typeof req.query.q === "string" ? req.query.q : void 0;
+    const limit = Number(req.query.limit) || 50;
+    const contacts = await getContacts(q, limit);
+    return res.json({ success: true, count: contacts.length, data: contacts });
+  } catch (error) {
+    console.error("v1 GET /contacts error:", error);
+    return res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : "Failed to fetch contacts"
     });
   }
 });
@@ -3394,6 +3478,15 @@ async function createApp() {
     asyncRoute(async (_req, res) => {
       const all = await db.select().from(accounts).orderBy(accounts.created_at);
       res.json(all.map(publicAccount));
+    })
+  );
+  app.get(
+    "/api/contacts",
+    asyncRoute(async (req, res) => {
+      const { getContacts: getContacts2 } = await Promise.resolve().then(() => (init_contacts(), contacts_exports));
+      const q = typeof req.query.q === "string" ? req.query.q : void 0;
+      const limit = Number(req.query.limit) || 50;
+      res.json(await getContacts2(q, limit));
     })
   );
   app.post(
