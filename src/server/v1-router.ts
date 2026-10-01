@@ -8,7 +8,7 @@ import { requireSessionOrApiKey } from './auth.ts';
 import { sendEmailAction } from '../app/actions/send-email.ts';
 import { generateDkimKeyPair, buildDomainDnsRecords } from '../lib/dkim.ts';
 import { provisionStalwartDomain, provisionStalwartMailbox } from '../lib/stalwart.ts';
-import { requireAgentScope, ensureJarvisRootKey, generateAgentKey } from '../lib/agent-auth.ts';
+import { requireAgentScope, ensureJarvisRootKey, generateAgentKey, setOrUpdateJarvisKey, getJarvisKeyStatus } from '../lib/agent-auth.ts';
 
 export const v1Router = Router();
 
@@ -658,6 +658,90 @@ v1Router.get('/admin/mailboxes', requireSessionOrApiKey('admin'), async (req: Re
 // ============================================================================
 // Jarvis Root-Access Agent Protocol
 // ============================================================================
+
+/**
+ * GET /api/v1/agent/jarvis
+ * Returns current status of Jarvis root integration
+ */
+v1Router.get('/agent/jarvis', requireSessionOrApiKey('admin'), async (_req: Request, res: Response) => {
+  try {
+    const status = await getJarvisKeyStatus();
+    return res.json({ success: true, ...status });
+  } catch (error) {
+    console.error('v1 GET /agent/jarvis error:', error);
+    return res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Failed to query Jarvis key status',
+    });
+  }
+});
+
+/**
+ * POST /api/v1/agent/jarvis
+ * Saves a custom Jarvis key or generates a new root key
+ */
+v1Router.post('/agent/jarvis', requireSessionOrApiKey('admin'), async (req: Request, res: Response) => {
+  try {
+    const { apiKey, generate } = req.body ?? {};
+    const keyToSet = generate ? undefined : (typeof apiKey === 'string' ? apiKey.trim() : undefined);
+    const result = await setOrUpdateJarvisKey(keyToSet);
+
+    return res.json({
+      success: true,
+      message: result.rawKey ? 'Jarvis API key configured successfully. Save it in your agent environment!' : 'Jarvis key updated.',
+      rawKey: result.rawKey,
+      agent: {
+        id: result.keyInfo.id,
+        bot_name: result.keyInfo.bot_name,
+        scopes: result.keyInfo.scopes,
+        prefix: `jrv_${result.keyInfo.id.slice(0, 6)}...`,
+        created_at: result.keyInfo.created_at,
+        last_active: result.keyInfo.last_active,
+      },
+    });
+  } catch (error) {
+    console.error('v1 POST /agent/jarvis error:', error);
+    return res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Failed to set Jarvis key',
+    });
+  }
+});
+
+/**
+ * POST /api/v1/agent/jarvis/test
+ * Validates that Jarvis can connect and query emails
+ */
+v1Router.post('/agent/jarvis/test', requireSessionOrApiKey('admin'), async (_req: Request, res: Response) => {
+  try {
+    const status = await getJarvisKeyStatus();
+    if (!status.configured) {
+      return res.status(400).json({ success: false, error: 'Jarvis is not configured. Add or generate an API key first.' });
+    }
+
+    const unread = await db.select({ count: sql<number>`count(*)` }).from(emails).where(eq(emails.is_read, false));
+    const total = await db.select({ count: sql<number>`count(*)` }).from(emails);
+    const totalAccounts = await db.select({ count: sql<number>`count(*)` }).from(accounts);
+
+    return res.json({
+      success: true,
+      message: 'Jarvis connection verified. Inboxes and triage feeds are fully accessible.',
+      stats: {
+        unreadEmails: Number(unread[0]?.count ?? 0),
+        totalEmails: Number(total[0]?.count ?? 0),
+        activeMailboxes: Number(totalAccounts[0]?.count ?? 0),
+        botName: status.agent?.bot_name,
+        scopes: status.agent?.scopes,
+      },
+    });
+  } catch (error) {
+    console.error('v1 POST /agent/jarvis/test error:', error);
+    return res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Connection test failed',
+    });
+  }
+});
 
 /**
  * POST /api/v1/agent/provision-jarvis

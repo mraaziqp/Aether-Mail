@@ -77,7 +77,7 @@ export const DeveloperConsole: React.FC<DeveloperConsoleProps> = ({
   onReturnToFeed,
   onEmailIngested,
 }) => {
-  const [activeSubTab, setActiveSubTab] = useState<'keys' | 'metrics' | 'webhooks' | 'endpoints' | 'payfast'>('keys');
+  const [activeSubTab, setActiveSubTab] = useState<'keys' | 'metrics' | 'webhooks' | 'endpoints' | 'payfast' | 'jarvis'>('keys');
 
   // Keys state
   const [keys, setKeys] = useState<ApiKeyInfo[]>([]);
@@ -101,7 +101,7 @@ export const DeveloperConsole: React.FC<DeveloperConsoleProps> = ({
   const [simulationResult, setSimulationResult] = useState<any>(null);
 
   // Bot API interactive tester state
-  const [testEndpoint, setTestEndpoint] = useState<'emails' | 'send' | 'patch'>('emails');
+  const [testEndpoint, setTestEndpoint] = useState<'emails' | 'send' | 'patch' | 'triage'>('emails');
   const [testToken, setTestToken] = useState('');
   const [testRunning, setTestRunning] = useState(false);
   const [testOutput, setTestOutput] = useState<any>(null);
@@ -283,6 +283,12 @@ export const DeveloperConsole: React.FC<DeveloperConsoleProps> = ({
         });
         const data = await res.json();
         setTestOutput(data);
+      } else if (testEndpoint === 'triage') {
+        const res = await fetch('/api/v1/agent/triage?unread_only=true', {
+          headers: { 'Authorization': authHeader },
+        });
+        const data = await res.json();
+        setTestOutput(data);
       }
     } catch (err) {
       setTestOutput({ success: false, error: err instanceof Error ? err.message : 'Network test error' });
@@ -407,6 +413,19 @@ export const DeveloperConsole: React.FC<DeveloperConsoleProps> = ({
         >
           <CreditCard className="w-3.5 h-3.5" />
           <span>PayFast Merchant Gateway</span>
+        </button>
+
+        <button
+          onClick={() => setActiveSubTab('jarvis')}
+          className={`flex items-center space-x-2 px-3.5 py-2.5 text-xs font-medium border-b-2 transition-colors whitespace-nowrap ${
+            activeSubTab === 'jarvis'
+              ? 'border-cyan-400 text-cyan-400 bg-[#151821]/50'
+              : 'border-transparent text-zinc-400 hover:text-zinc-200 hover:bg-[#151821]/20'
+          }`}
+        >
+          <Bot className="w-3.5 h-3.5 text-cyan-400" />
+          <span>Jarvis Protocol</span>
+          <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse" />
         </button>
       </div>
 
@@ -856,6 +875,7 @@ export const DeveloperConsole: React.FC<DeveloperConsoleProps> = ({
                 >
                   <option value="emails">GET /api/v1/emails (Inspect 5 Recent)</option>
                   <option value="send">POST /api/v1/emails/send (Dispatch Test)</option>
+                  <option value="triage">GET /api/v1/agent/triage (Jarvis Unread Feed)</option>
                 </select>
 
                 <button
@@ -1048,6 +1068,52 @@ export const DeveloperConsole: React.FC<DeveloperConsoleProps> = ({
                     </button>
                   </div>
                 </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* SUBTAB 6: JARVIS AUTONOMOUS AGENT PROTOCOL */}
+        {activeSubTab === 'jarvis' && (
+          <div className="max-w-5xl mx-auto space-y-6">
+            <div className="p-4 rounded-xl bg-[#11131a] border border-[#1a1d27] space-y-2">
+              <div className="flex items-center justify-between">
+                <h3 className="text-xs font-bold text-zinc-100 uppercase tracking-wider font-mono flex items-center gap-2">
+                  <Bot className="w-4 h-4 text-cyan-400" />
+                  <span>Jarvis Autonomous Protocol &amp; Command Center</span>
+                </h3>
+                <span className="text-[10px] font-mono text-cyan-400 bg-cyan-950/60 px-2 py-0.5 rounded border border-cyan-800/60">
+                  ROOT SCOPES: read_all • send_as_any • super_admin
+                </span>
+              </div>
+              <p className="text-xs text-zinc-400">
+                Grant Jarvis real-time programmatic access to inspect all business inboxes (<code className="text-cyan-300 font-mono">contact@</code>, <code className="text-cyan-300 font-mono">info@</code>), triage incoming telemetry, and dispatch verified autonomous email responses.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className="p-4 rounded-xl bg-[#11131a] border border-[#1a1d27] space-y-2">
+                <span className="text-[10px] uppercase font-mono text-cyan-400">Step 1 • Authorization</span>
+                <div className="text-xs font-bold text-zinc-100">Set Jarvis Master Key</div>
+                <p className="text-[11px] text-zinc-400 leading-relaxed">
+                  Open <span className="text-zinc-200 font-medium">Settings &amp; Jarvis</span> from the sidebar to set or generate a master API key for Jarvis.
+                </p>
+              </div>
+
+              <div className="p-4 rounded-xl bg-[#11131a] border border-[#1a1d27] space-y-2">
+                <span className="text-[10px] uppercase font-mono text-emerald-400">Step 2 • Triage</span>
+                <div className="text-xs font-bold text-zinc-100">GET /api/v1/agent/triage</div>
+                <p className="text-[11px] text-zinc-400 leading-relaxed">
+                  Jarvis queries unread emails across all accounts with body snippets and AI classifications.
+                </p>
+              </div>
+
+              <div className="p-4 rounded-xl bg-[#11131a] border border-[#1a1d27] space-y-2">
+                <span className="text-[10px] uppercase font-mono text-purple-400">Step 3 • Dispatch</span>
+                <div className="text-xs font-bold text-zinc-100">POST /api/v1/agent/dispatch</div>
+                <p className="text-[11px] text-zinc-400 leading-relaxed">
+                  Jarvis autonomously dispatches signed outbound email verified by SPF, DKIM, and DMARC.
+                </p>
               </div>
             </div>
           </div>

@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import { db } from '../db/index.ts';
-import { api_keys, type ApiKey } from '../db/schema.ts';
+import { api_keys, agent_keys, type ApiKey } from '../db/schema.ts';
 import { eq } from 'drizzle-orm';
 import type { Request, Response, NextFunction } from 'express';
 
@@ -108,6 +108,54 @@ export async function validateApiKey(
       .limit(1);
 
     if (records.length === 0) {
+      // Check agent_keys (Jarvis root access)
+      const agentRecords = await db
+        .select()
+        .from(agent_keys)
+        .where(eq(agent_keys.key_hash, hashed))
+        .limit(1);
+
+      if (agentRecords.length > 0) {
+        const agent = agentRecords[0];
+        const agentScopes = Array.isArray(agent.scopes) ? agent.scopes : [];
+        const isSuper = agentScopes.includes('super_admin');
+        const canRead = isSuper || agentScopes.includes('read_all') || agentScopes.includes('read');
+        const canSend = isSuper || agentScopes.includes('send_as_any') || agentScopes.includes('send');
+
+        if (requiredScope === 'send' && !canSend) {
+          return {
+            valid: false,
+            error: `Unauthorized: Agent '${agent.bot_name}' lacks send permissions.`,
+            statusCode: 403,
+          };
+        }
+        if (requiredScope === 'read' && !canRead) {
+          return {
+            valid: false,
+            error: `Unauthorized: Agent '${agent.bot_name}' lacks read permissions.`,
+            statusCode: 403,
+          };
+        }
+
+        db.update(agent_keys)
+          .set({ last_active: new Date() })
+          .where(eq(agent_keys.id, agent.id))
+          .catch((err) => console.warn('Failed to update agent last_active:', err));
+
+        return {
+          valid: true,
+          apiKey: {
+            id: agent.id,
+            name: `${agent.bot_name} Master Key`,
+            key_hash: agent.key_hash,
+            prefix: `jrv_${agent.id.slice(0, 6)}...`,
+            scopes: ['admin', 'read', 'write', 'send'],
+            last_used_at: new Date(),
+            created_at: agent.created_at,
+          },
+        };
+      }
+
       return {
         valid: false,
         error: 'Invalid or revoked API key.',

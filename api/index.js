@@ -1958,6 +1958,41 @@ async function validateApiKey(rawKey, requiredScope) {
   try {
     const records = await db.select().from(api_keys).where(eq3(api_keys.key_hash, hashed)).limit(1);
     if (records.length === 0) {
+      const agentRecords = await db.select().from(agent_keys).where(eq3(agent_keys.key_hash, hashed)).limit(1);
+      if (agentRecords.length > 0) {
+        const agent = agentRecords[0];
+        const agentScopes = Array.isArray(agent.scopes) ? agent.scopes : [];
+        const isSuper = agentScopes.includes("super_admin");
+        const canRead = isSuper || agentScopes.includes("read_all") || agentScopes.includes("read");
+        const canSend = isSuper || agentScopes.includes("send_as_any") || agentScopes.includes("send");
+        if (requiredScope === "send" && !canSend) {
+          return {
+            valid: false,
+            error: `Unauthorized: Agent '${agent.bot_name}' lacks send permissions.`,
+            statusCode: 403
+          };
+        }
+        if (requiredScope === "read" && !canRead) {
+          return {
+            valid: false,
+            error: `Unauthorized: Agent '${agent.bot_name}' lacks read permissions.`,
+            statusCode: 403
+          };
+        }
+        db.update(agent_keys).set({ last_active: /* @__PURE__ */ new Date() }).where(eq3(agent_keys.id, agent.id)).catch((err) => console.warn("Failed to update agent last_active:", err));
+        return {
+          valid: true,
+          apiKey: {
+            id: agent.id,
+            name: `${agent.bot_name} Master Key`,
+            key_hash: agent.key_hash,
+            prefix: `jrv_${agent.id.slice(0, 6)}...`,
+            scopes: ["admin", "read", "write", "send"],
+            last_used_at: /* @__PURE__ */ new Date(),
+            created_at: agent.created_at
+          }
+        };
+      }
       return {
         valid: false,
         error: "Invalid or revoked API key.",
@@ -2318,8 +2353,8 @@ function generateAgentKey(botName = "Jarvis", scopes = ["super_admin", "read_all
   };
 }
 async function authenticateAgentToken(rawToken, requiredScope) {
-  if (!rawToken || !rawToken.startsWith("jrv_root_")) {
-    return { valid: false, error: "Invalid agent authorization header. Key must start with jrv_root_." };
+  if (!rawToken || typeof rawToken !== "string" || !rawToken.trim()) {
+    return { valid: false, error: "Invalid agent authorization header. Missing key." };
   }
   const tokenHash = hashAgentKey(rawToken);
   const matched = await db.select().from(agent_keys).where(eq4(agent_keys.key_hash, tokenHash)).limit(1);
@@ -2380,6 +2415,50 @@ async function ensureJarvisRootKey() {
   return {
     rawKey: newKey.rawKey,
     keyInfo: inserted
+  };
+}
+async function setOrUpdateJarvisKey(customRawKey) {
+  const botName = "Jarvis";
+  const scopes = ["super_admin", "read_all", "send_as_any"];
+  let rawKey;
+  let keyHash;
+  let id;
+  if (customRawKey && customRawKey.trim()) {
+    rawKey = customRawKey.trim();
+    keyHash = hashAgentKey(rawKey);
+    id = `ak_jrv_${Date.now()}`;
+  } else {
+    const generated = generateAgentKey(botName, scopes);
+    rawKey = generated.rawKey;
+    keyHash = generated.keyHash;
+    id = generated.id;
+  }
+  await db.delete(agent_keys).where(eq4(agent_keys.bot_name, botName));
+  const [inserted] = await db.insert(agent_keys).values({
+    id,
+    bot_name: botName,
+    key_hash: keyHash,
+    scopes,
+    created_at: /* @__PURE__ */ new Date()
+  }).returning();
+  return { rawKey, keyInfo: inserted };
+}
+async function getJarvisKeyStatus() {
+  const existing = await db.select().from(agent_keys).where(eq4(agent_keys.bot_name, "Jarvis")).limit(1);
+  if (existing.length === 0) {
+    return { configured: false };
+  }
+  const k = existing[0];
+  return {
+    configured: true,
+    agent: {
+      id: k.id,
+      bot_name: k.bot_name,
+      scopes: k.scopes || [],
+      prefix: `jrv_${k.id.slice(0, 6)}...`,
+      created_at: k.created_at,
+      last_active: k.last_active
+    }
   };
 }
 
@@ -2859,6 +2938,72 @@ v1Router.get("/admin/mailboxes", requireSessionOrApiKey("admin"), async (req, re
     return res.status(500).json({
       success: false,
       error: error instanceof Error ? error.message : "Failed to list mailboxes"
+    });
+  }
+});
+v1Router.get("/agent/jarvis", requireSessionOrApiKey("admin"), async (_req, res) => {
+  try {
+    const status = await getJarvisKeyStatus();
+    return res.json({ success: true, ...status });
+  } catch (error) {
+    console.error("v1 GET /agent/jarvis error:", error);
+    return res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : "Failed to query Jarvis key status"
+    });
+  }
+});
+v1Router.post("/agent/jarvis", requireSessionOrApiKey("admin"), async (req, res) => {
+  try {
+    const { apiKey, generate } = req.body ?? {};
+    const keyToSet = generate ? void 0 : typeof apiKey === "string" ? apiKey.trim() : void 0;
+    const result = await setOrUpdateJarvisKey(keyToSet);
+    return res.json({
+      success: true,
+      message: result.rawKey ? "Jarvis API key configured successfully. Save it in your agent environment!" : "Jarvis key updated.",
+      rawKey: result.rawKey,
+      agent: {
+        id: result.keyInfo.id,
+        bot_name: result.keyInfo.bot_name,
+        scopes: result.keyInfo.scopes,
+        prefix: `jrv_${result.keyInfo.id.slice(0, 6)}...`,
+        created_at: result.keyInfo.created_at,
+        last_active: result.keyInfo.last_active
+      }
+    });
+  } catch (error) {
+    console.error("v1 POST /agent/jarvis error:", error);
+    return res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : "Failed to set Jarvis key"
+    });
+  }
+});
+v1Router.post("/agent/jarvis/test", requireSessionOrApiKey("admin"), async (_req, res) => {
+  try {
+    const status = await getJarvisKeyStatus();
+    if (!status.configured) {
+      return res.status(400).json({ success: false, error: "Jarvis is not configured. Add or generate an API key first." });
+    }
+    const unread = await db.select({ count: sql2`count(*)` }).from(emails).where(eq8(emails.is_read, false));
+    const total = await db.select({ count: sql2`count(*)` }).from(emails);
+    const totalAccounts = await db.select({ count: sql2`count(*)` }).from(accounts);
+    return res.json({
+      success: true,
+      message: "Jarvis connection verified. Inboxes and triage feeds are fully accessible.",
+      stats: {
+        unreadEmails: Number(unread[0]?.count ?? 0),
+        totalEmails: Number(total[0]?.count ?? 0),
+        activeMailboxes: Number(totalAccounts[0]?.count ?? 0),
+        botName: status.agent?.bot_name,
+        scopes: status.agent?.scopes
+      }
+    });
+  } catch (error) {
+    console.error("v1 POST /agent/jarvis/test error:", error);
+    return res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : "Connection test failed"
     });
   }
 });

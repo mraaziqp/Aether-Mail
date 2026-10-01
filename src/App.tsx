@@ -10,6 +10,7 @@ import { SyncHealthModal } from './components/SyncHealthModal.tsx';
 import { DeveloperConsole } from './components/DeveloperConsole.tsx';
 import { LoginScreen } from './components/LoginScreen.tsx';
 import { ThemeManagerModal, type ThemeId } from './components/ThemeManagerModal.tsx';
+import { SettingsModal } from './components/SettingsModal.tsx';
 import { api, onUnauthorized } from './client/api.ts';
 import { CATEGORY_META, parseSender } from './components/ui.tsx';
 import type { EmailItem, EmailCategory, ParsedSearchIntent, SessionUser, StatusPayload } from './types.ts';
@@ -66,6 +67,7 @@ export default function App() {
   const [connectOpen, setConnectOpen] = useState(false);
   const [connectEmail, setConnectEmail] = useState('');
   const [healthOpen, setHealthOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [themeOpen, setThemeOpen] = useState(false);
   const [mobileNav, setMobileNav] = useState(false);
   const [mobileDetail, setMobileDetail] = useState(false);
@@ -456,6 +458,7 @@ export default function App() {
     onCompose: () => { openCompose(); setMobileNav(false); },
     onConnect: () => { setConnectEmail(''); setConnectOpen(true); setMobileNav(false); },
     onOpenHealth: () => { setHealthOpen(true); setMobileNav(false); },
+    onOpenSettings: () => { setSettingsOpen(true); setMobileNav(false); },
     onOpenDeveloper: () => { setView('developer'); setMobileNav(false); },
     onOpenTheme: () => setThemeOpen(true),
     onLogout: async () => { await api('/api/auth/logout', { method: 'POST' }).catch(() => undefined); setUser(null); },
@@ -588,6 +591,7 @@ export default function App() {
         onReconnect={(email) => { setConnectEmail(email); setHealthOpen(false); setConnectOpen(true); }}
       />
       <ThemeManagerModal isOpen={themeOpen} onClose={() => setThemeOpen(false)} currentTheme={theme} onSelectTheme={setTheme} />
+      <SettingsModal isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} user={user} onMailboxesChanged={() => { void fetchStatus(); void fetchEmails(true); }} />
     </div>
   );
 }

@@ -45,8 +45,8 @@ export async function authenticateAgentToken(
   rawToken: string,
   requiredScope?: string
 ): Promise<{ valid: boolean; error?: string; agent?: ValidatedAgentAuth }> {
-  if (!rawToken || !rawToken.startsWith('jrv_root_')) {
-    return { valid: false, error: 'Invalid agent authorization header. Key must start with jrv_root_.' };
+  if (!rawToken || typeof rawToken !== 'string' || !rawToken.trim()) {
+    return { valid: false, error: 'Invalid agent authorization header. Missing key.' };
   }
 
   const tokenHash = hashAgentKey(rawToken);
@@ -180,3 +180,76 @@ export async function ensureJarvisRootKey(): Promise<{ rawKey?: string; keyInfo:
     keyInfo: inserted,
   };
 }
+
+/**
+ * Saves a custom Jarvis API key or generates a fresh one, updating the active key for 'Jarvis'.
+ */
+export async function setOrUpdateJarvisKey(customRawKey?: string): Promise<{ rawKey: string; keyInfo: AgentKey }> {
+  const botName = 'Jarvis';
+  const scopes = ['super_admin', 'read_all', 'send_as_any'];
+  let rawKey: string;
+  let keyHash: string;
+  let id: string;
+
+  if (customRawKey && customRawKey.trim()) {
+    rawKey = customRawKey.trim();
+    keyHash = hashAgentKey(rawKey);
+    id = `ak_jrv_${Date.now()}`;
+  } else {
+    const generated = generateAgentKey(botName, scopes);
+    rawKey = generated.rawKey;
+    keyHash = generated.keyHash;
+    id = generated.id;
+  }
+
+  await db.delete(agent_keys).where(eq(agent_keys.bot_name, botName));
+
+  const [inserted] = await db.insert(agent_keys).values({
+    id,
+    bot_name: botName,
+    key_hash: keyHash,
+    scopes,
+    created_at: new Date(),
+  }).returning();
+
+  return { rawKey, keyInfo: inserted };
+}
+
+/**
+ * Returns current Jarvis key configuration status.
+ */
+export async function getJarvisKeyStatus(): Promise<{
+  configured: boolean;
+  agent?: {
+    id: string;
+    bot_name: string;
+    scopes: string[];
+    prefix: string;
+    created_at: Date | null;
+    last_active: Date | null;
+  };
+}> {
+  const existing = await db
+    .select()
+    .from(agent_keys)
+    .where(eq(agent_keys.bot_name, 'Jarvis'))
+    .limit(1);
+
+  if (existing.length === 0) {
+    return { configured: false };
+  }
+
+  const k = existing[0];
+  return {
+    configured: true,
+    agent: {
+      id: k.id,
+      bot_name: k.bot_name,
+      scopes: k.scopes || [],
+      prefix: `jrv_${k.id.slice(0, 6)}...`,
+      created_at: k.created_at,
+      last_active: k.last_active,
+    },
+  };
+}
+

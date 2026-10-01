@@ -1,7 +1,7 @@
 import React from 'react';
 import {
   Inbox, Send, AlertOctagon, ShieldAlert, MailOpen, PenSquare, Plus, Layers, Terminal, Palette, LogOut,
-  ChevronsLeft, ChevronsRight, Activity,
+  ChevronsLeft, ChevronsRight, Activity, Settings,
 } from 'lucide-react';
 import type { Account, StatusPayload, SessionUser } from '../types.ts';
 import { CATEGORY_META, relativeTime } from './ui.tsx';
@@ -22,6 +22,7 @@ interface SidebarProps {
   onCompose: () => void;
   onConnect: () => void;
   onOpenHealth: () => void;
+  onOpenSettings: () => void;
   onOpenDeveloper: () => void;
   onOpenTheme: () => void;
   onLogout: () => void;
@@ -169,6 +170,7 @@ export function Sidebar(props: SidebarProps) {
           collapsed={collapsed}
           onClick={props.onOpenHealth}
         />
+        <NavItem icon={<Settings className="w-[18px] h-[18px]" />} label="Settings & Jarvis" active={false} collapsed={collapsed} onClick={props.onOpenSettings} />
         <NavItem icon={<Terminal className="w-[18px] h-[18px]" />} label="Developer & API" active={false} collapsed={collapsed} onClick={props.onOpenDeveloper} />
         <NavItem icon={<Palette className="w-[18px] h-[18px]" />} label="Theme" active={false} collapsed={collapsed} onClick={props.onOpenTheme} />
         <NavItem icon={<LogOut className="w-[18px] h-[18px]" />} label={props.user ? `Sign out ${props.user.username}` : 'Sign out'} active={false} collapsed={collapsed} onClick={props.onLogout} />
