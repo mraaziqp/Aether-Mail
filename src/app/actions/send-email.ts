@@ -41,6 +41,8 @@ export interface SendEmailParams {
   htmlBody: string;
   /** Id of the stored email being replied to; adds threading headers. */
   inReplyToId?: string;
+  /** Where replies should go, when not to the sender (an agent's +alias). */
+  replyTo?: string;
   attachments?: SendAttachment[];
   fromName?: string;
 }
@@ -248,6 +250,7 @@ export async function sendEmailAction(params: SendEmailParams): Promise<SendEmai
       html: params.htmlBody,
       text: htmlToText(params.htmlBody),
       messageId: `<${crypto.randomUUID()}@${domain}>`,
+      replyTo: params.replyTo && EMAIL_RE.test(params.replyTo.trim()) ? params.replyTo.trim() : undefined,
       headers,
       attachments: params.attachments ?? [],
     };
