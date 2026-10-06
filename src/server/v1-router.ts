@@ -829,6 +829,13 @@ v1Router.get('/agent/triage', requireAgentScope('read_all'), async (req: Request
         requires_alert: emails.requires_alert,
         is_read: emails.is_read,
         received_at: emails.received_at,
+        // Who it was addressed to and which way it went: an agent answering
+        // mail written to it (you+jarvis@…) has to tell that apart from the
+        // rest of the mailbox, including mail the owner sent to other people.
+        message_id: emails.message_id,
+        recipients: emails.recipients,
+        direction: emails.direction,
+        folder: emails.folder,
       })
       .from(emails)
       .leftJoin(accounts, eq(emails.account_id, accounts.id))
@@ -930,6 +937,7 @@ v1Router.post('/agent/dispatch', requireAgentScope('send_as_any'), async (req: R
       subject,
       htmlBody,
       inReplyToId: typeof req.body.in_reply_to === 'string' ? req.body.in_reply_to : undefined,
+      replyTo: typeof replyTo === 'string' ? replyTo : undefined,
       fromName: 'Jarvis',
     });
 
