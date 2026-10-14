@@ -36,6 +36,41 @@ export interface EmailItem {
   folder?: string | null;
   has_attachments?: boolean;
   message_id?: string | null;
+  /** Outbound only: 'sent' | 'delivery_delayed' | 'delivered' | 'bounced' | 'complained' | 'failed'. */
+  delivery_status?: DeliveryStatus | null;
+  delivery_detail?: string | null;
+  delivery_updated_at?: string | null;
+  transport?: string | null;
+}
+
+export type DeliveryStatus = 'sent' | 'delivery_delayed' | 'delivered' | 'bounced' | 'complained' | 'failed';
+
+export interface DeliveryInfo {
+  id: string;
+  status: DeliveryStatus | null;
+  detail: string | null;
+  updatedAt: string | null;
+  transport: string | null;
+  trackable: boolean;
+}
+
+export interface RecipientCheck {
+  address: string;
+  verdict: 'ok' | 'invalid' | 'no-domain' | 'no-mail' | 'unverified';
+  reason?: string;
+  warning?: string;
+  suggestion?: string;
+}
+
+export interface SendResult {
+  success: boolean;
+  provider?: string;
+  emailId?: string;
+  deliveryStatus?: DeliveryStatus;
+  trackable?: boolean;
+  error?: string;
+  recipientChecks?: RecipientCheck[];
+  attempts?: Array<{ provider: string; error: string }>;
 }
 
 export interface Capabilities {
@@ -49,6 +84,8 @@ export interface Capabilities {
   backgroundSync: boolean;
   serverless: boolean;
   defaultSender: string | null;
+  /** Largest request the server accepts; attachments must fit inside it. */
+  maxBodyBytes?: number;
 }
 
 export interface StatusPayload {

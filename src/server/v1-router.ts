@@ -13,6 +13,8 @@ import { getContacts } from '../lib/contacts.ts';
 
 export const v1Router = Router();
 
+const VALID_CATEGORIES = ['urgent', 'personal', 'newsletter', 'automated', 'work', 'financial', 'spam'];
+
 /**
  * GET /api/v1/emails
  * Root Programmatic Endpoint for External Bots and Agents to query emails
@@ -139,6 +141,33 @@ v1Router.get('/emails/:id', requireApiKey('read'), async (req: Request, res: Res
 });
 
 /**
+ * GET /api/v1/emails/:id/delivery
+ * Delivery state of a sent message (the emailId returned by /emails/send):
+ * sent → delivered | delivery_delayed | bounced | complained | failed.
+ */
+v1Router.get('/emails/:id/delivery', requireApiKey('read'), async (req: Request, res: Response) => {
+  try {
+    const { refreshDelivery } = await import('../lib/delivery.ts');
+    const row = await refreshDelivery(req.params.id);
+    if (!row) return res.status(404).json({ success: false, error: `Email ${req.params.id} not found.` });
+    return res.json({
+      success: true,
+      data: {
+        id: row.id,
+        status: row.delivery_status,
+        detail: row.delivery_detail,
+        updated_at: row.delivery_updated_at ? row.delivery_updated_at.toISOString() : null,
+        transport: row.transport,
+        trackable: row.transport === 'Resend' && Boolean(row.provider_message_id),
+      },
+    });
+  } catch (error) {
+    console.error('v1 GET /emails/:id/delivery error:', error);
+    return res.status(500).json({ success: false, error: error instanceof Error ? error.message : 'Failed to read delivery state' });
+  }
+});
+
+/**
  * GET /api/v1/contacts
  * Returns aggregated contacts directory for bots and UI autocomplete
  */
@@ -221,7 +250,12 @@ v1Router.patch('/emails/:id', requireApiKey('write'), async (req: Request, res: 
 
     const updates: Record<string, any> = {};
     if (typeof is_read === 'boolean') updates.is_read = is_read;
-    if (typeof category === 'string') updates.category = category;
+    if (typeof category === 'string') {
+      if (!VALID_CATEGORIES.includes(category)) {
+        return res.status(400).json({ success: false, error: `category must be one of: ${VALID_CATEGORIES.join(', ')}.` });
+      }
+      updates.category = category;
+    }
     if (typeof requires_alert === 'boolean') updates.requires_alert = requires_alert;
 
     if (Object.keys(updates).length === 0) {
@@ -587,8 +621,14 @@ v1Router.post('/admin/mailboxes', requireSessionOrApiKey('admin'), async (req: R
       });
     }
 
+    // No default: a literal fallback password makes every mailbox created
+    // without one share a credential that is published in this repository.
+    if (typeof password !== 'string' || password.length < 12) {
+      return res.status(400).json({ success: false, error: 'password is required (at least 12 characters).' });
+    }
+
     const salt = crypto.randomBytes(16).toString('hex');
-    const hash = crypto.pbkdf2Sync(password || 'AetherPass123!', salt, 10000, 32, 'sha256').toString('hex');
+    const hash = crypto.pbkdf2Sync(password, salt, 10000, 32, 'sha256').toString('hex');
     const pwdHash = `${salt}:${hash}`;
 
     await provisionStalwartMailbox(email, pwdHash);
@@ -875,8 +915,13 @@ v1Router.patch('/agent/triage', requireAgentScope('read_all'), async (req: Reque
     }
 
     const updates: Record<string, any> = {};
-    if (category) updates.category = category;
-    if (ai_summary !== undefined) updates.ai_summary = ai_summary;
+    if (category) {
+      if (!VALID_CATEGORIES.includes(category)) {
+        return res.status(400).json({ success: false, error: `category must be one of: ${VALID_CATEGORIES.join(', ')}.` });
+      }
+      updates.category = category;
+    }
+    if (ai_summary !== undefined) updates.ai_summary = String(ai_summary).slice(0, 2000);
     if (requires_alert !== undefined) updates.requires_alert = Boolean(requires_alert);
     if (is_read !== undefined) updates.is_read = Boolean(is_read);
 
@@ -951,6 +996,9 @@ v1Router.post('/agent/dispatch', requireAgentScope('send_as_any'), async (req: R
       agent: (req as any).agent?.botName,
       data: {
         message_id: result.messageId,
+        // Poll GET /api/v1/emails/:email_id/delivery for delivered / bounced.
+        email_id: result.emailId ?? null,
+        delivery_status: result.deliveryStatus ?? null,
         from: sender,
         to: Array.isArray(to) ? to.join(', ') : String(to),
         subject,

@@ -1,9 +1,10 @@
 import React, { useEffect, useRef, useState, useMemo } from 'react';
-import { Send, Loader2, Paperclip, X, PenSquare, CheckCircle2, AlertTriangle, ChevronDown, Users, User, Check } from 'lucide-react';
-import type { Account, ContactItem } from '../types.ts';
+import { Send, Loader2, Paperclip, X, PenSquare, AlertTriangle, ChevronDown, Users, Check, RotateCcw } from 'lucide-react';
+import type { Account, ContactItem, RecipientCheck, SendResult } from '../types.ts';
 import { api, ApiError } from '../client/api.ts';
 import { Modal, inputClass, buttonPrimary, buttonGhost } from './ui.tsx';
 import type { ComposePrefill } from './EmailDetail.tsx';
+import { DeliveryProgress, useDeliveryTracking, type SendPhase } from './DeliveryProgress.tsx';
 
 interface ComposeModalProps {
   isOpen: boolean;
@@ -12,7 +13,26 @@ interface ComposeModalProps {
   defaultAccountId: string;
   prefill: ComposePrefill | null;
   onEmailSent: () => void;
+  /** Request size the server accepts (Vercel: 4.5 MB); attachments must fit. */
+  maxBodyBytes?: number;
 }
+
+type RecipientField = 'to' | 'cc' | 'bcc';
+
+const splitAddresses = (raw: string) =>
+  raw
+    .split(/[,;\n]+/)
+    .map((t) => t.trim())
+    .filter(Boolean)
+    .map((t) => (t.match(/<([^>]+)>/)?.[1] ?? t).trim().toLowerCase());
+
+/** Swaps one address inside a recipient field, keeping any display name around it. */
+const replaceAddress = (raw: string, from: string, to: string) => {
+  const re = new RegExp(from.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+  return raw.split(/([,;\n]+)/).map((part) => part.replace(re, to)).join('');
+};
+
+const isBlocking = (c: RecipientCheck) => c.verdict !== 'ok' && c.verdict !== 'unverified';
 
 interface Attachment { filename: string; content: string; contentType: string; size: number }
 
@@ -32,8 +52,21 @@ export function ComposeModal(p: ComposeModalProps) {
   const [body, setBody] = useState('');
   const [quoted, setQuoted] = useState('');
   const [files, setFiles] = useState<Attachment[]>([]);
-  const [busy, setBusy] = useState(false);
-  const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
+  const [phase, setPhase] = useState<SendPhase>('idle');
+  const [sendError, setSendError] = useState<string | null>(null);
+  const [sent, setSent] = useState<SendResult | null>(null);
+  const [checks, setChecks] = useState<Record<RecipientField, RecipientCheck[]>>({ to: [], cc: [], bcc: [] });
+  const busy = phase === 'checking' || phase === 'sending';
+  const locked = busy || phase === 'tracking';
+
+  const delivery = useDeliveryTracking(
+    sent?.emailId,
+    sent ? { status: sent.deliveryStatus ?? 'sent', trackable: Boolean(sent.trackable && sent.emailId), transport: sent.provider ?? null } : null
+  );
+  const latest = useRef({ to, cc, bcc });
+  latest.current = { to, cc, bcc };
+  const deliveredOk = delivery?.status === 'delivered';
+  const deliveryFailed = delivery?.status === 'bounced' || delivery?.status === 'failed';
 
   // Contacts autocomplete state
   const [contacts, setContacts] = useState<ContactItem[]>([]);
@@ -101,7 +134,10 @@ export function ComposeModal(p: ComposeModalProps) {
       setBody('');
       setQuoted(pf.body ?? '');
       setFiles([]);
-      setResult(null);
+      setPhase('idle');
+      setSendError(null);
+      setSent(null);
+      setChecks({ to: [], cc: [], bcc: [] });
       setShowContactPicker(false);
     } else if (!from && p.accounts.length > 0) {
       // If accounts loaded asynchronously after open, pick sender without touching user's typed recipient
@@ -169,12 +205,46 @@ export function ComposeModal(p: ComposeModalProps) {
     }
   };
 
+  // Once the recipient's server answers, refresh the list (Sent badge) and close on success.
+  useEffect(() => {
+    if (!delivery?.status || delivery.status === 'sent') return;
+    p.onEmailSent();
+    if (!deliveredOk || !p.isOpen) return;
+    const t = setTimeout(p.onClose, 2500);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [delivery?.status]);
+
+  /** Checks a recipient field when it loses focus, so a typo shows before Send. */
+  const checkField = async (field: RecipientField, value: string) => {
+    const addrs = splitAddresses(value);
+    if (!addrs.length) { setChecks((c) => ({ ...c, [field]: [] })); return; }
+    try {
+      const r = await api<{ results: RecipientCheck[] }>('/api/recipients/check', { method: 'POST', json: { addresses: addrs }, timeoutMs: 15_000 });
+      setChecks((c) => ({ ...c, [field]: r.results }));
+    } catch { /* the send path checks again */ }
+  };
+
+  const applySuggestion = (field: RecipientField, c: RecipientCheck) => {
+    if (!c.suggestion) return;
+    const setter = field === 'to' ? setTo : field === 'cc' ? setCc : setBcc;
+    const current = field === 'to' ? to : field === 'cc' ? cc : bcc;
+    setter(replaceAddress(current, c.address, c.suggestion));
+    setChecks((prev) => ({ ...prev, [field]: prev[field].filter((x) => x.address !== c.address) }));
+    if (phase === 'error') { setPhase('idle'); setSendError(null); }
+  };
+
+  const issues = (Object.keys(checks) as RecipientField[]).flatMap((field) =>
+    checks[field].filter((c) => isBlocking(c) || c.warning).map((c) => ({ field, c }))
+  );
+
   const addFiles = async (list: FileList | null) => {
     if (!list) return;
     const next: Attachment[] = [];
     for (const f of Array.from(list)) {
       if (f.size > 10 * 1024 * 1024) {
-        setResult({ ok: false, text: `${f.name} is over 10 MB` });
+        setPhase('error');
+        setSendError(`${f.name} is over 10 MB`);
         continue;
       }
       const buf = new Uint8Array(await f.arrayBuffer());
@@ -185,31 +255,83 @@ export function ComposeModal(p: ComposeModalProps) {
     setFiles((prev) => [...prev, ...next]);
   };
 
+  const canSend = Boolean(from && to.trim() && subject.trim() && (body.trim() || quoted));
+
   const send = async () => {
-    setBusy(true);
-    setResult(null);
-    try {
-      const r = await api<{ provider: string; attempts?: Array<{ provider: string; error: string }> }>('/api/send-email', {
-        method: 'POST',
-        json: {
-          accountId: from,
-          to,
-          cc: cc || undefined,
-          bcc: bcc || undefined,
-          subject,
-          htmlBody: toHtml(body) + quoted,
-          inReplyToId: p.prefill?.inReplyToId,
-          attachments: files.map(({ filename, content, contentType }) => ({ filename, content, contentType })),
-        },
-      });
-      setResult({ ok: true, text: `Sent via ${r.provider}` });
-      p.onEmailSent();
-      setTimeout(p.onClose, 900);
-    } catch (err) {
-      setResult({ ok: false, text: err instanceof ApiError ? err.message : 'Send failed' });
-    } finally {
-      setBusy(false);
+    // Ctrl+Enter reaches here too: never start a second send while one is running.
+    if (locked || !canSend) return;
+    setSendError(null);
+
+    const payload = {
+      accountId: from,
+      to,
+      cc: cc || undefined,
+      bcc: bcc || undefined,
+      subject,
+      htmlBody: toHtml(body) + quoted,
+      inReplyToId: p.prefill?.inReplyToId,
+      attachments: files.map(({ filename, content, contentType }) => ({ filename, content, contentType })),
+    };
+    const size = new Blob([JSON.stringify(payload)]).size;
+    if (p.maxBodyBytes && size > p.maxBodyBytes) {
+      setPhase('error');
+      setSendError(
+        `With attachments this message is ${(size / 1048576).toFixed(1)} MB; the server accepts up to ${(p.maxBodyBytes / 1048576).toFixed(1)} MB. ` +
+          'Remove or shrink an attachment, or share a link instead.'
+      );
+      return;
     }
+
+    try {
+      // 1. Every recipient domain must be able to receive mail.
+      setPhase('checking');
+      const values: Record<RecipientField, string> = { to, cc, bcc };
+      const fresh: Record<RecipientField, RecipientCheck[]> = { to: [], cc: [], bcc: [] };
+      await Promise.all(
+        (Object.keys(values) as RecipientField[]).map(async (f) => {
+          const addrs = splitAddresses(values[f]);
+          if (!addrs.length) return;
+          fresh[f] = (await api<{ results: RecipientCheck[] }>('/api/recipients/check', { method: 'POST', json: { addresses: addrs }, timeoutMs: 20_000 })).results;
+        })
+      );
+      setChecks(fresh);
+      const blocking = [...fresh.to, ...fresh.cc, ...fresh.bcc].filter(isBlocking);
+      if (blocking.length) {
+        setPhase('error');
+        setSendError(`Fix ${blocking.length === 1 ? 'the recipient' : `${blocking.length} recipients`} marked above. Nothing was sent.`);
+        return;
+      }
+
+      // 2. Send; the server checks again and refuses anything undeliverable.
+      setPhase('sending');
+      const r = await api<SendResult>('/api/send-email', { method: 'POST', json: payload, timeoutMs: 90_000 });
+      setSent(r);
+      setPhase('tracking');
+      p.onEmailSent();
+    } catch (err) {
+      const bodyChecks = err instanceof ApiError ? (err.body as SendResult | null)?.recipientChecks : undefined;
+      if (bodyChecks?.length) {
+        const fieldOf = (a: string): RecipientField => (splitAddresses(cc).includes(a) ? 'cc' : splitAddresses(bcc).includes(a) ? 'bcc' : 'to');
+        const byField: Record<RecipientField, RecipientCheck[]> = { to: [], cc: [], bcc: [] };
+        for (const c of bodyChecks) byField[fieldOf(c.address)].push(c);
+        setChecks(byField);
+      }
+      setPhase('error');
+      setSendError(
+        err instanceof ApiError
+          ? err.message
+          : err instanceof Error && err.name === 'TimeoutError'
+            ? 'The server did not answer in time. Check Sent before resending.'
+            : 'Send failed'
+      );
+    }
+  };
+
+  /** After a bounce: unlock the form with everything kept, so the address can be fixed. */
+  const editAndResend = () => {
+    setSent(null);
+    setPhase('idle');
+    setSendError(null);
   };
 
   const fromAccount = p.accounts.find((a) => a.id === from);
@@ -225,22 +347,25 @@ export function ComposeModal(p: ComposeModalProps) {
       footer={
         <div className="flex items-center gap-3">
           <input ref={fileRef} type="file" multiple className="hidden" onChange={(e) => { void addFiles(e.target.files); e.target.value = ''; }} />
-          <button className={buttonGhost} onClick={() => fileRef.current?.click()}><Paperclip className="w-4 h-4" /> Attach</button>
+          <button className={buttonGhost} disabled={locked} onClick={() => fileRef.current?.click()}><Paperclip className="w-4 h-4" /> Attach</button>
           <div className="flex-1 min-w-0">
-            {result && (
-              <div className={`flex items-start gap-2 text-sm ${result.ok ? 'text-emerald-300' : 'text-rose-300'}`}>
-                {result.ok ? <CheckCircle2 className="w-4 h-4 mt-0.5 flex-shrink-0" /> : <AlertTriangle className="w-4 h-4 mt-0.5 flex-shrink-0" />}
-                <span className="break-words">{result.text}</span>
-              </div>
-            )}
+            {phase !== 'idle' && <DeliveryProgress phase={phase} delivery={delivery} provider={sent?.provider} error={sendError} />}
           </div>
-          <button className={buttonPrimary} disabled={busy || !from || !to.trim() || !subject.trim() || !(body.trim() || quoted)} onClick={send}>
-            {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />} Send
-          </button>
+          {phase === 'tracking' ? (
+            deliveryFailed ? (
+              <button className={buttonPrimary} onClick={editAndResend}><RotateCcw className="w-4 h-4" /> Edit &amp; resend</button>
+            ) : (
+              <button className={buttonGhost} onClick={p.onClose}>{deliveredOk ? 'Done' : 'Close'}</button>
+            )
+          ) : (
+            <button className={buttonPrimary} disabled={locked || !canSend} onClick={send}>
+              {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />} {phase === 'checking' ? 'Checking' : phase === 'sending' ? 'Sending' : 'Send'}
+            </button>
+          )}
         </div>
       }
     >
-      <div className="space-y-4">
+      <fieldset disabled={locked} className="space-y-4 min-w-0 disabled:opacity-70">
         <div className="grid grid-cols-[64px_1fr] items-center gap-x-3 gap-y-3">
           <span className="text-sm text-zinc-500">From</span>
           <div className="relative">
@@ -268,6 +393,7 @@ export function ComposeModal(p: ComposeModalProps) {
                 onBlur={() => {
                   // Short timeout to allow click on dropdown items
                   setTimeout(() => setIsToFocused(false), 200);
+                  setTimeout(() => void checkField('to', latest.current.to), 250);
                 }}
                 onKeyDown={handleToKeyDown}
                 placeholder="name@company.com, another@…"
@@ -353,9 +479,40 @@ export function ComposeModal(p: ComposeModalProps) {
           {showCc && (
             <>
               <span className="text-sm text-zinc-500">Cc</span>
-              <input className={inputClass} value={cc} onChange={(e) => setCc(e.target.value)} placeholder="cc@company.com" />
+              <input className={inputClass} value={cc} onChange={(e) => setCc(e.target.value)} onBlur={() => void checkField('cc', cc)} placeholder="cc@company.com" />
               <span className="text-sm text-zinc-500">Bcc</span>
-              <input className={inputClass} value={bcc} onChange={(e) => setBcc(e.target.value)} placeholder="bcc@company.com" />
+              <input className={inputClass} value={bcc} onChange={(e) => setBcc(e.target.value)} onBlur={() => void checkField('bcc', bcc)} placeholder="bcc@company.com" />
+            </>
+          )}
+
+          {issues.length > 0 && (
+            <>
+              <span />
+              <div className="space-y-1.5">
+                {issues.map(({ field, c }) => (
+                  <div
+                    key={`${field}:${c.address}`}
+                    className={`flex items-start gap-2 rounded-lg border px-3 py-2 text-xs ${
+                      isBlocking(c) ? 'border-rose-500/30 bg-rose-500/[0.07] text-rose-200' : 'border-amber-500/30 bg-amber-500/[0.07] text-amber-200'
+                    }`}
+                  >
+                    <AlertTriangle className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" />
+                    <span className="flex-1 min-w-0 break-words">
+                      <span className="font-mono">{c.address}</span>: {c.reason ?? c.warning}
+                      {isBlocking(c) && !c.suggestion && ' Check the spelling.'}
+                    </span>
+                    {c.suggestion && (
+                      <button
+                        type="button"
+                        onClick={() => applySuggestion(field, c)}
+                        className="flex-shrink-0 rounded-md border border-white/15 px-2 py-0.5 font-medium hover:bg-white/5"
+                      >
+                        Use {c.suggestion}
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
             </>
           )}
 
@@ -393,7 +550,7 @@ export function ComposeModal(p: ComposeModalProps) {
             ))}
           </div>
         )}
-      </div>
+      </fieldset>
     </Modal>
   );
 }

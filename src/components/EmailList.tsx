@@ -2,6 +2,7 @@ import React from 'react';
 import { Square, Paperclip, AlertTriangle, CheckCheck, Mail, MailOpen, Trash2, X, Sparkles, Loader2, Inbox, ArrowUpRight } from 'lucide-react';
 import type { EmailItem, ParsedSearchIntent } from '../types.ts';
 import { Avatar, CategoryBadge, listTime, parseSender, iconButton } from './ui.tsx';
+import { DeliveryBadge } from './DeliveryProgress.tsx';
 
 export { getCategoryBadgeStyle } from './ui.tsx';
 
@@ -143,7 +144,7 @@ export function EmailList(p: EmailListProps) {
                             <AlertTriangle className="w-3 h-3" /> Action
                           </span>
                         )}
-                        <CategoryBadge category={e.category} />
+                        {outbound && e.delivery_status ? <DeliveryBadge status={e.delivery_status} transport={e.transport} /> : <CategoryBadge category={e.category} />}
                         {e.has_attachments && <Paperclip className="w-3.5 h-3.5 text-zinc-500" />}
                         {p.showAccount && e.account_email && (
                           <span className="ml-auto text-[10px] font-mono text-zinc-500 truncate max-w-[170px]">{e.account_email}</span>

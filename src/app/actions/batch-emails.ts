@@ -38,6 +38,9 @@ export async function batchUpdateEmailsAction(
         error: 'No email IDs provided for batch operation.',
       };
     }
+    if (emailIds.length > 1000 || emailIds.some((id) => typeof id !== 'string')) {
+      return { success: false, affectedCount: 0, action, error: 'emailIds must be at most 1000 strings.' };
+    }
 
     if (action === 'mark_read') {
       const result = await db

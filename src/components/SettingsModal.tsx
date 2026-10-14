@@ -428,7 +428,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       send_as_any
                     </div>
                     <div className="text-zinc-400 text-[11px] leading-relaxed">
-                      Autonomous outbound dispatch as contact@arpcloudsolutions.co.za or any configured mailbox.
+                      Autonomous outbound dispatch as {user?.primaryEmail || "the default sender"} or any configured mailbox.
                     </div>
                   </div>
                   <div className="p-3 rounded-lg bg-[#090b10] border border-white/5 space-y-1">
@@ -513,7 +513,7 @@ print("Total messages to triage:", inbox_data.get("total", 0))`}
 {`# Jarvis Environment Configuration
 AETHERMAIL_URL=${baseUrl}
 JARVIS_API_KEY=${activeKeyForSamples}
-AETHERMAIL_SENDER=contact@arpcloudsolutions.co.za`}
+AETHERMAIL_SENDER=${user?.primaryEmail || "you@your-domain"}`}
                     </pre>
                   )}
                 </div>
@@ -537,11 +537,11 @@ AETHERMAIL_SENDER=contact@arpcloudsolutions.co.za`}
                 <div className="space-y-2 text-xs">
                   <div className="flex items-center justify-between p-3 rounded-lg bg-[#090b10] border border-white/5">
                     <span className="text-zinc-400">Domain</span>
-                    <span className="font-mono text-zinc-100 font-medium">arpcloudsolutions.co.za</span>
+                    <span className="font-mono text-zinc-100 font-medium">{user?.domain || "BUSINESS_DOMAIN not set"}</span>
                   </div>
                   <div className="flex items-center justify-between p-3 rounded-lg bg-[#090b10] border border-white/5">
                     <span className="text-zinc-400">Primary Outbound Sender</span>
-                    <span className="font-mono text-cyan-300 font-medium">contact@arpcloudsolutions.co.za</span>
+                    <span className="font-mono text-cyan-300 font-medium">{user?.primaryEmail || "AETHERMAIL_SENDER not set"}</span>
                   </div>
                   <div className="flex items-center justify-between p-3 rounded-lg bg-[#090b10] border border-white/5">
                     <span className="text-zinc-400">Automated Mailboxes</span>

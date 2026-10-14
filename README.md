@@ -95,7 +95,7 @@ curl -s -X PATCH "http://localhost:3000/api/v1/emails/msg_ops_12345" \
 ├── drizzle.config.ts         # Drizzle ORM CLI configuration
 ├── server.ts                 # Production Express/Vite server runtime
 ├── src/
-│   ├── app/                  # Next.js Server Actions and webhook handlers
+│   ├── app/actions/          # Server-side actions: send, search, batch
 │   ├── components/           # NOC Command Center UI components
 │   │   ├── DashboardHeader.tsx
 │   │   ├── DeveloperConsole.tsx

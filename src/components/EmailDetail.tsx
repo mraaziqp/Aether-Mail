@@ -3,9 +3,10 @@ import {
   ArrowLeft, Reply, ReplyAll, Forward, Trash2, Mail, MailOpen, Sparkles, Send, Loader2, AlertTriangle,
   Paperclip, ChevronDown, Tag, Check, Inbox, ShieldAlert,
 } from 'lucide-react';
-import type { EmailItem, EmailCategory } from '../types.ts';
+import type { EmailItem, EmailCategory, SendResult } from '../types.ts';
 import { api, ApiError } from '../client/api.ts';
 import { Avatar, CategoryBadge, CATEGORY_META, parseSender, relativeTime, iconButton, buttonPrimary, buttonGhost } from './ui.tsx';
+import { DeliveryProgress, useDeliveryTracking, type SendPhase } from './DeliveryProgress.tsx';
 
 export interface ComposePrefill {
   accountId?: string;
@@ -49,7 +50,9 @@ function MessageBody({ html }: { html: string }) {
   const [height, setHeight] = useState(240);
   const isHtml = /<[a-z][\s\S]*>/i.test(html);
   const doc = useMemo(
-    () => `<!doctype html><html><head><meta charset="utf-8"><base target="_blank"><meta name="viewport" content="width=device-width,initial-scale=1">
+    // The CSP backs up the sandbox: no scripts, no form posts (phishing forms),
+    // no frames or plugins. Images and styles still load so mail renders.
+    () => `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src * data: blob: cid:; style-src 'unsafe-inline' *; font-src * data:; media-src * data:; form-action 'none'; frame-src 'none'; object-src 'none'; script-src 'none'; base-uri 'none'"><base target="_blank"><meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
   html,body{margin:0;padding:0;background:#fff;color:#1f2937;font:15px/1.6 -apple-system,BlinkMacSystemFont,'Segoe UI',Inter,Roboto,sans-serif;word-wrap:break-word;overflow-wrap:anywhere}
   body{padding:28px 32px}
@@ -92,18 +95,45 @@ export function EmailDetail(p: EmailDetailProps) {
   const [reply, setReply] = useState('');
   const [tone, setTone] = useState<'professional' | 'concise' | 'friendly' | 'firm'>('professional');
   const [drafting, setDrafting] = useState(false);
-  const [sending, setSending] = useState(false);
-  const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
+  const [phase, setPhase] = useState<SendPhase>('idle');
+  const [sendError, setSendError] = useState<string | null>(null);
+  const [sent, setSent] = useState<SendResult | null>(null);
   const [catOpen, setCatOpen] = useState(false);
   const [showEarlier, setShowEarlier] = useState(false);
   const replyRef = useRef<HTMLTextAreaElement>(null);
+  const sending = phase === 'checking' || phase === 'sending';
+
+  // The reply just sent from the box below.
+  const replyDelivery = useDeliveryTracking(
+    sent?.emailId,
+    sent ? { status: sent.deliveryStatus ?? 'sent', trackable: Boolean(sent.trackable && sent.emailId), transport: sent.provider ?? null } : null
+  );
+
+  // The open message itself, when it is one we sent.
+  const opened = p.detail ?? p.email;
+  const openedOutbound = opened?.direction === 'outbound' && Boolean(opened.delivery_status);
+  const openedDelivery = useDeliveryTracking(
+    openedOutbound ? opened!.id : null,
+    openedOutbound
+      ? { status: opened!.delivery_status ?? null, detail: opened!.delivery_detail ?? null, transport: opened!.transport ?? null, trackable: opened!.transport === 'Resend' }
+      : null
+  );
 
   useEffect(() => {
     setReply('');
-    setResult(null);
+    setPhase('idle');
+    setSendError(null);
+    setSent(null);
     setShowEarlier(false);
     setCatOpen(false);
   }, [p.email?.id]);
+
+  // Refresh the list once a sent message's fate is known, so badges follow.
+  const onSentRef = useRef(p.onSent);
+  onSentRef.current = p.onSent;
+  useEffect(() => {
+    if (replyDelivery?.status && replyDelivery.status !== 'sent') onSentRef.current();
+  }, [replyDelivery?.status]);
 
   useEffect(() => {
     if (p.replyFocusSignal) replyRef.current?.focus();
@@ -135,24 +165,28 @@ export function EmailDetail(p: EmailDetailProps) {
 
   const draftWithAi = async () => {
     setDrafting(true);
-    setResult(null);
+    setSendError(null);
+    if (phase === 'error') setPhase('idle');
     try {
       const r = await api<{ draftReply: string }>('/api/smart-reply', { method: 'POST', json: { emailId: e.id, tone } });
       setReply(r.draftReply);
       replyRef.current?.focus();
     } catch (err) {
-      setResult({ ok: false, text: err instanceof ApiError ? err.message : 'Could not draft a reply' });
+      setPhase('error');
+      setSendError(err instanceof ApiError ? err.message : 'Could not draft a reply');
     } finally {
       setDrafting(false);
     }
   };
 
   const sendReply = async () => {
-    if (!reply.trim() || !replyTarget) return;
-    setSending(true);
-    setResult(null);
+    // Ctrl+Enter reaches here too: one send at a time.
+    if (sending || !reply.trim() || !replyTarget) return;
+    setSent(null);
+    setSendError(null);
+    setPhase('sending'); // the server checks the recipient before handing it over
     try {
-      const r = await api<{ provider: string; attempts?: Array<{ provider: string; error: string }> }>('/api/send-email', {
+      const r = await api<SendResult>('/api/send-email', {
         method: 'POST',
         json: {
           accountId: e.account_id,
@@ -161,16 +195,25 @@ export function EmailDetail(p: EmailDetailProps) {
           htmlBody: plainToHtml(reply) + quote(e),
           inReplyToId: e.id,
         },
+        timeoutMs: 90_000,
       });
       setReply('');
-      setResult({ ok: true, text: `Sent via ${r.provider}${r.attempts?.length ? ` (after ${r.attempts.map((a) => a.provider).join(', ')} failed)` : ''}` });
+      setSent(r);
+      setPhase('tracking');
       p.onSent();
     } catch (err) {
-      setResult({ ok: false, text: err instanceof ApiError ? err.message : 'Send failed' });
-    } finally {
-      setSending(false);
+      setPhase('error');
+      setSendError(err instanceof ApiError ? err.message : 'Send failed');
     }
   };
+
+  const resendFromBounce = () =>
+    p.onOpenCompose({
+      accountId: e.account_id,
+      to: e.recipients || '',
+      subject: e.subject,
+      body: p.detail?.full_body ?? e.body_snippet,
+    });
 
   return (
     <section className="flex-1 min-w-0 h-full flex flex-col bg-[#0a0b10]/30">
@@ -266,6 +309,27 @@ export function EmailDetail(p: EmailDetailProps) {
             </div>
           </div>
 
+          {/* Delivery of a message we sent */}
+          {openedOutbound && openedDelivery && (
+            <div
+              className={`rounded-2xl border px-5 py-4 ${
+                openedDelivery.status === 'bounced' || openedDelivery.status === 'failed'
+                  ? 'border-rose-500/30 bg-rose-500/[0.06]'
+                  : 'border-[#1f2331] bg-[#0d0f15]'
+              }`}
+            >
+              <DeliveryProgress phase="tracking" delivery={openedDelivery} />
+              {(openedDelivery.status === 'bounced' || openedDelivery.status === 'failed') && (
+                <div className="mt-3 flex items-center gap-3 flex-wrap">
+                  <span className="text-xs text-zinc-400">Check the address for typos, then send it again.</span>
+                  <button className={`${buttonGhost} ml-auto`} onClick={resendFromBounce}>
+                    <Send className="w-4 h-4" /> Fix address &amp; resend
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
           {/* AI summary */}
           {e.ai_summary && !outbound && e.ai_summary !== e.body_snippet.slice(0, 160) && (
             <div className="flex gap-3 rounded-2xl border border-violet-500/20 bg-gradient-to-r from-violet-500/[0.08] to-cyan-500/[0.04] px-5 py-4">
@@ -353,11 +417,15 @@ export function EmailDetail(p: EmailDetailProps) {
                 </>
               )}
               <div className="flex-1" />
-              {result && <span className={`text-xs ${result.ok ? 'text-emerald-300' : 'text-rose-300'} max-w-md`}>{result.text}</span>}
               <button onClick={sendReply} disabled={sending || !reply.trim() || !replyTarget} className={buttonPrimary}>
-                {sending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />} Send
+                {sending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />} {sending ? 'Sending' : 'Send'}
               </button>
             </div>
+            {phase !== 'idle' && (
+              <div className="px-4 py-3 border-t border-[#1a1d27]">
+                <DeliveryProgress phase={phase} delivery={replyDelivery} provider={sent?.provider} error={sendError} compact />
+              </div>
+            )}
           </div>
         </div>
       </div>

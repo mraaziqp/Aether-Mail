@@ -3,7 +3,7 @@
 You are working on **AetherMail**, a unified AI-driven Network Operations Center (NOC) email and incident command console built for autonomous triage and enterprise IT operations.
 
 ## Tech Stack
-- **Architecture**: Next.js App Router & Vite/Express hybrid runtime with TypeScript.
+- **Architecture**: Vite (React SPA) + Express API with TypeScript; served on Vercel via `api/index.js`. All HTTP routes live in `server.ts` and `src/server/v1-router.ts`; `src/app/actions/*` are plain server-side modules (there is no Next.js).
 - **Database & ORM**: Neon PostgreSQL / Cloud SQL via Drizzle ORM (`drizzle-orm`, `drizzle-kit`).
 - **AI Engine**: Google Gemini 2.5 Flash via `@google/genai` TypeScript SDK (server-side only).
 - **Styling**: Tailwind CSS, Lucide React icons, Motion animations.

@@ -37,11 +37,24 @@ export const emails = pgTable('emails', {
   direction: text('direction').notNull().default('inbound'),
   folder: text('folder'),
   has_attachments: boolean('has_attachments').notNull().default(false),
+  /**
+   * Outbound only. 'sent' (a transport accepted it), then from the provider:
+   * 'delivered' | 'delivery_delayed' | 'bounced' | 'complained' | 'failed'.
+   */
+  delivery_status: text('delivery_status'),
+  /** Bounce diagnostic or other provider detail for the latest status. */
+  delivery_detail: text('delivery_detail'),
+  delivery_updated_at: timestamp('delivery_updated_at'),
+  /** The transport's own id (Resend email id), used to look the message up. */
+  provider_message_id: text('provider_message_id'),
+  /** Transport that accepted the message, e.g. 'Resend'. */
+  transport: text('transport'),
 }, (t) => [
   index('emails_received_at_idx').on(t.received_at),
   index('emails_account_received_idx').on(t.account_id, t.received_at),
   index('emails_category_idx').on(t.category),
   index('emails_thread_idx').on(t.thread_id),
+  index('emails_provider_message_idx').on(t.provider_message_id),
   // The same message can legitimately sit in two connected mailboxes (sent to
   // contact@ and info@): dedupe per account, not globally.
   uniqueIndex('emails_account_message_uidx').on(t.account_id, t.message_id),

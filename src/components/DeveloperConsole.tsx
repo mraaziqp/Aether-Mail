@@ -147,6 +147,24 @@ export const DeveloperConsole: React.FC<DeveloperConsoleProps> = ({
     fetchMetrics();
   }, [fetchKeys, fetchMetrics]);
 
+  // PayFast configuration comes from the server environment, never from the bundle.
+  const [payfast, setPayfast] = useState<{
+    connected: boolean;
+    merchantId: string | null;
+    merchantKeyConfigured: boolean;
+    businessEmail: string | null;
+    gatewayMode: string;
+    itnWebhookUrl: string | null;
+  } | null>(null);
+  useEffect(() => {
+    if (activeSubTab !== 'payfast' || payfast) return;
+    fetch('/api/payfast/status')
+      .then((r) => r.json())
+      .then((d) => d.success && setPayfast(d))
+      .catch(() => {});
+  }, [activeSubTab, payfast]);
+  const itnUrl = payfast?.itnWebhookUrl || `${window.location.origin}/api/webhooks/payfast`;
+
   // Create Key
   const handleCreateKey = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -995,13 +1013,20 @@ export const DeveloperConsole: React.FC<DeveloperConsoleProps> = ({
                       <h3 className="text-sm font-bold text-zinc-100 uppercase tracking-wider font-mono">
                         PayFast Merchant Operations Console
                       </h3>
-                      <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 font-bold flex items-center gap-1">
-                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                        GATEWAY ACTIVE
-                      </span>
+                      {payfast?.connected ? (
+                        <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 font-bold flex items-center gap-1">
+                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                          {payfast.gatewayMode === 'sandbox' ? 'SANDBOX' : 'GATEWAY ACTIVE'}
+                        </span>
+                      ) : (
+                        <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-amber-500/15 border border-amber-500/30 text-amber-300 font-bold">
+                          {payfast ? 'NOT CONFIGURED' : 'CHECKING…'}
+                        </span>
+                      )}
                     </div>
                     <p className="text-xs text-zinc-400 mt-0.5">
-                      Merchant ID: <span className="font-mono text-cyan-300 font-bold">36249939</span> • Business Mailbox: <span className="font-mono text-zinc-200">info@arpcloudsolutions.co.za</span>
+                      Merchant ID: <span className="font-mono text-cyan-300 font-bold">{payfast?.merchantId ?? '—'}</span> • Business Mailbox:{' '}
+                      <span className="font-mono text-zinc-200">{payfast?.businessEmail ?? 'first mailbox (PAYFAST_NOTIFY_EMAIL unset)'}</span>
                     </p>
                   </div>
                 </div>
@@ -1033,32 +1058,36 @@ export const DeveloperConsole: React.FC<DeveloperConsoleProps> = ({
                 <div className="p-3 rounded-lg bg-[#0b0f19] border border-[#1e293b]">
                   <span className="text-[10px] font-semibold text-zinc-400 uppercase tracking-wider block">Merchant ID</span>
                   <div className="flex items-center justify-between mt-1">
-                    <span className="font-mono text-sm font-bold text-zinc-100">36249939</span>
-                    <button
-                      onClick={() => {
-                        navigator.clipboard.writeText('36249939');
-                        setCopiedCode('36249939');
-                        setTimeout(() => setCopiedCode(null), 2000);
-                      }}
-                      className="text-zinc-500 hover:text-cyan-400 transition-colors"
-                    >
-                      {copiedCode === '36249939' ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                    </button>
+                    <span className="font-mono text-sm font-bold text-zinc-100">{payfast?.merchantId ?? 'Set PAYFAST_MERCHANT_ID'}</span>
+                    {payfast?.merchantId && (
+                      <button
+                        onClick={() => {
+                          navigator.clipboard.writeText(payfast.merchantId!);
+                          setCopiedCode('merchant');
+                          setTimeout(() => setCopiedCode(null), 2000);
+                        }}
+                        className="text-zinc-500 hover:text-cyan-400 transition-colors"
+                      >
+                        {copiedCode === 'merchant' ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                      </button>
+                    )}
                   </div>
                 </div>
 
                 <div className="p-3 rounded-lg bg-[#0b0f19] border border-[#1e293b]">
                   <span className="text-[10px] font-semibold text-zinc-400 uppercase tracking-wider block">Merchant Key</span>
-                  <div className="mt-1 text-xs text-zinc-400">Server-side only (<code className="font-mono">PAYFAST_MERCHANT_KEY</code>) — never shown in the browser.</div>
+                  <div className="mt-1 text-xs text-zinc-400">
+                    {payfast?.merchantKeyConfigured ? 'Configured' : 'Not set'} — server-side only (<code className="font-mono">PAYFAST_MERCHANT_KEY</code>), never shown in the browser.
+                  </div>
                 </div>
 
                 <div className="p-3 rounded-lg bg-[#0b0f19] border border-[#1e293b]">
                   <span className="text-[10px] font-semibold text-zinc-400 uppercase tracking-wider block">Live ITN Webhook</span>
                   <div className="flex items-center justify-between mt-1">
-                    <span className="font-mono text-xs text-cyan-400 truncate">/api/webhooks/payfast</span>
+                    <span className="font-mono text-xs text-cyan-400 truncate" title={itnUrl}>{itnUrl}</span>
                     <button
                       onClick={() => {
-                        navigator.clipboard.writeText('https://mail.arpcloudsolutions.co.za/api/webhooks/payfast');
+                        navigator.clipboard.writeText(itnUrl);
                         setCopiedCode('webhook');
                         setTimeout(() => setCopiedCode(null), 2000);
                       }}

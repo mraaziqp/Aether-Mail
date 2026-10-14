@@ -22,6 +22,11 @@ export const createPool = () => {
       try {
         const parsed = new URL(rawUrl);
         parsed.searchParams.delete('channel_binding');
+        // pg already treats 'require' as 'verify-full' (and warns that this
+        // will change); say so explicitly so certificates stay verified.
+        if (['prefer', 'require', 'verify-ca'].includes(parsed.searchParams.get('sslmode') ?? '')) {
+          parsed.searchParams.set('sslmode', 'verify-full');
+        }
         cleanUrl = parsed.toString();
       } catch {
         cleanUrl = rawUrl.replace(/[?&]channel_binding=[^&]*/g, '');

@@ -30,6 +30,13 @@ const PORT = Number(process.env.PORT) || 3007;
 /** True when running inside Vercel's serverless runtime rather than on the laptop. */
 const IS_SERVERLESS = !!process.env.VERCEL;
 
+/**
+ * Largest request body the platform accepts. Vercel functions refuse bodies
+ * over 4.5 MB before the app sees them, so attachments are capped below that
+ * (base64 adds a third); a long-running server takes up to the JSON limit.
+ */
+const MAX_BODY_BYTES = IS_SERVERLESS ? 4_400_000 : 15 * 1024 * 1024;
+
 type RawRequest = Request & { rawBody?: string };
 
 const escapeHtml = (s: string) =>
@@ -281,6 +288,7 @@ export async function createApp() {
           backgroundSync: !IS_SERVERLESS && process.env.BACKGROUND_SYNC !== 'false',
           serverless: IS_SERVERLESS,
           defaultSender: process.env.AETHERMAIL_SENDER?.trim() || null,
+          maxBodyBytes: MAX_BODY_BYTES,
         },
       });
     })
@@ -396,6 +404,10 @@ export async function createApp() {
     direction: emails.direction,
     folder: emails.folder,
     has_attachments: emails.has_attachments,
+    delivery_status: emails.delivery_status,
+    delivery_detail: emails.delivery_detail,
+    delivery_updated_at: emails.delivery_updated_at,
+    transport: emails.transport,
     account_email: accounts.email_address,
   };
 
@@ -470,6 +482,24 @@ export async function createApp() {
     })
   );
 
+  /** Latest delivery state of a sent message; asks the provider when not final yet. */
+  app.get(
+    '/api/emails/:id/delivery',
+    asyncRoute(async (req, res) => {
+      const { refreshDelivery } = await import('./src/lib/delivery.ts');
+      const row = await refreshDelivery(String(req.params.id));
+      if (!row) return res.status(404).json({ error: 'Email not found' });
+      res.json({
+        id: row.id,
+        status: row.delivery_status,
+        detail: row.delivery_detail,
+        updatedAt: row.delivery_updated_at,
+        transport: row.transport,
+        trackable: row.transport === 'Resend' && Boolean(row.provider_message_id),
+      });
+    })
+  );
+
   app.patch(
     '/api/emails/:id/read',
     asyncRoute(async (req, res) => {
@@ -525,6 +555,22 @@ export async function createApp() {
         .where(and(eq(emails.is_read, false), accountId ? eq(emails.account_id, accountId) : undefined))
         .returning({ id: emails.id });
       res.json({ success: true, updated: done.length });
+    })
+  );
+
+  /** Live recipient check for the compose form: can each domain receive mail, and did you mean …? */
+  app.post(
+    '/api/recipients/check',
+    asyncRoute(async (req, res) => {
+      const { checkRecipients } = await import('./src/lib/recipient-check.ts');
+      const { knownDomains } = await import('./src/lib/contacts.ts');
+      const raw: unknown = req.body?.addresses;
+      const list = (Array.isArray(raw) ? raw : String(raw ?? '').split(/[,;\n]+/))
+        .map((a) => String(a).trim())
+        .map((a) => a.match(/<([^>]+)>/)?.[1]?.trim() ?? a)
+        .filter(Boolean)
+        .slice(0, 50);
+      res.json({ success: true, results: await checkRecipients(list, await knownDomains().catch(() => [])) });
     })
   );
 

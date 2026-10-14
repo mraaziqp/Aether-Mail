@@ -1,9 +1,9 @@
 import { eq, inArray, sql } from 'drizzle-orm';
 import { db } from '../db/index.ts';
 import { accounts, emails, type Account } from '../db/schema.ts';
-import { mailboxPassword } from './secrets.ts';
+import { mailboxPassword, readMailboxConfig } from './secrets.ts';
 import { syncMailbox, createImapClient, resolveImapProvider } from './imap-sync.ts';
-import { readMailboxConfig } from './secrets.ts';
+import { backfillUntrackedSends, reconcileDeliveries } from './delivery.ts';
 import { isAiConfigured, classifyWithAi } from './gemini.ts';
 
 export interface AccountSyncReport {
@@ -142,13 +142,32 @@ export async function syncAllAccounts(opts: { force?: boolean; budgetMs?: number
     )
   );
 
+  // Follow recently sent mail to delivered / bounced in the same pass.
+  const delivery = await trackDeliveries(deadline);
+
   return {
     success: true,
     imported: reports.reduce((n, r) => n + r.imported, 0),
     reports,
+    delivery,
     durationMs: Date.now() - started,
     syncedAt: new Date().toISOString(),
   };
+}
+
+let backfillDone = false;
+
+async function trackDeliveries(deadline: number) {
+  try {
+    if (!backfillDone) {
+      backfillDone = true;
+      await backfillUntrackedSends();
+    }
+    return await reconcileDeliveries({ deadline });
+  } catch (err) {
+    console.warn('[delivery] reconcile skipped:', (err as Error).message);
+    return { checked: 0 };
+  }
 }
 
 /** Replaces keyword categories with a model's verdict, within the time left. */

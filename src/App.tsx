@@ -575,6 +575,7 @@ export default function App() {
         defaultAccountId={accountId}
         prefill={composePrefill}
         onEmailSent={() => { void fetchStatus(); void fetchEmails(true); }}
+        maxBodyBytes={caps?.maxBodyBytes}
       />
       <ConnectMailboxModal
         isOpen={connectOpen}

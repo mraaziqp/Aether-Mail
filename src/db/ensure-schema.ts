@@ -44,6 +44,12 @@ ALTER TABLE emails ADD COLUMN IF NOT EXISTS recipients text;
 ALTER TABLE emails ADD COLUMN IF NOT EXISTS direction text DEFAULT 'inbound' NOT NULL;
 ALTER TABLE emails ADD COLUMN IF NOT EXISTS folder text;
 ALTER TABLE emails ADD COLUMN IF NOT EXISTS has_attachments boolean DEFAULT false NOT NULL;
+ALTER TABLE emails ADD COLUMN IF NOT EXISTS delivery_status text;
+ALTER TABLE emails ADD COLUMN IF NOT EXISTS delivery_detail text;
+ALTER TABLE emails ADD COLUMN IF NOT EXISTS delivery_updated_at timestamp;
+ALTER TABLE emails ADD COLUMN IF NOT EXISTS provider_message_id text;
+ALTER TABLE emails ADD COLUMN IF NOT EXISTS transport text;
+CREATE INDEX IF NOT EXISTS emails_provider_message_idx ON emails (provider_message_id);
 CREATE INDEX IF NOT EXISTS emails_received_at_idx ON emails (received_at);
 CREATE INDEX IF NOT EXISTS emails_account_received_idx ON emails (account_id, received_at);
 CREATE INDEX IF NOT EXISTS emails_category_idx ON emails (category);
@@ -101,11 +107,28 @@ CREATE TABLE IF NOT EXISTS mailboxes (
 );
 `;
 
+/**
+ * Bump whenever DDL above changes. The database records the version it was
+ * brought to, and an up-to-date database skips the DDL entirely: ALTER TABLE
+ * takes an ACCESS EXCLUSIVE lock even when IF NOT EXISTS makes it a no-op, so
+ * running it on every serverless cold start stalls live queries on `emails`
+ * and can deadlock with them.
+ */
+const SCHEMA_VERSION = 'aethermail-schema:2026-10-14';
+
+async function migrateIfNeeded() {
+  const { rows } = await pool.query<{ v: string | null }>(
+    `SELECT obj_description(to_regclass('public.emails'), 'pg_class') AS v`
+  );
+  if (rows[0]?.v === SCHEMA_VERSION) return;
+  await pool.query(`${DDL}\nCOMMENT ON TABLE emails IS '${SCHEMA_VERSION}';`);
+}
+
 let ready: Promise<void> | null = null;
 
 export function ensureSchema(): Promise<void> {
   if (!ready) {
-    ready = pool.query(DDL).then(
+    ready = migrateIfNeeded().then(
       async () => {
         const { ensureBusinessMailboxes } = await import('../lib/business-mailboxes.ts');
         await ensureBusinessMailboxes().catch((err) => console.warn('[schema] business mailboxes not seeded:', err.message));

@@ -6,6 +6,8 @@ import { heuristicClassify } from './classify.ts';
 import { pushAlert } from './notify.ts';
 import { storeEmail } from './store-email.ts';
 import { businessDomain } from './business-mailboxes.ts';
+import { resendApi, resendConfigured } from './resend.ts';
+import { applyDeliveryStatus, describeBounce, fromResendEvent } from './delivery.ts';
 
 /**
  * Resend inbound mail (optional ingestion route).
@@ -15,8 +17,10 @@ import { businessDomain } from './business-mailboxes.ts';
  * AetherMail push-based — no polling at all — and Resend keeps the message, so
  * a missed webhook is retried and can be re-fetched.
  *
- * The primary plan is still Zoho as MX with IMAP sync (see BUSINESS-MAIL.md).
- * Use this route instead when you want AetherMail itself to be the inbox.
+ * The same endpoint takes Resend's delivery events (email.sent, .delivered,
+ * .delivery_delayed, .bounced, .complained, .failed) when the webhook is
+ * subscribed to them, which moves a sent message's delivery status on
+ * without waiting for the next poll.
  */
 
 /** Verifies a Svix-signed webhook (the scheme Resend uses). */
@@ -60,27 +64,35 @@ const toArray = (v?: string[] | string) => (Array.isArray(v) ? v : v ? [v] : [])
 const bareAddress = (s: string) => (s.match(/<([^>]+)>/)?.[1] ?? s).trim().toLowerCase();
 
 async function fetchReceived(emailId: string): Promise<ReceivedEmail | null> {
-  const key = process.env.RESEND_API_KEY?.trim();
-  if (!key) return null;
+  if (!resendConfigured()) return null;
   try {
-    const base = (process.env.RESEND_API_URL?.trim() || 'https://api.resend.com').replace(/\/$/, '');
-    const res = await fetch(`${base}/emails/receiving/${encodeURIComponent(emailId)}`, {
-      headers: { Authorization: `Bearer ${key}` },
-      signal: AbortSignal.timeout(10_000),
-    });
+    const res = await resendApi<ReceivedEmail>(`/emails/receiving/${encodeURIComponent(emailId)}`, { timeoutMs: 10_000 });
     if (!res.ok) {
       console.warn(`[resend-inbound] fetch ${emailId} → HTTP ${res.status} (a send-only API key cannot read received mail)`);
       return null;
     }
-    return (await res.json()) as ReceivedEmail;
+    return res.body;
   } catch (err) {
     console.warn('[resend-inbound] fetch failed:', (err as Error).message);
     return null;
   }
 }
 
-export async function ingestResendEvent(event: { type?: string; data?: ReceivedEmail }) {
-  if (event.type !== 'email.received' || !event.data) return { stored: 0, ignored: event.type ?? 'unknown' };
+interface DeliveryEventData {
+  email_id?: string;
+  bounce?: { message?: string; type?: string; subType?: string; diagnosticCode?: string[] | string };
+  failed?: { reason?: string };
+}
+
+export async function ingestResendEvent(event: { type?: string; data?: ReceivedEmail & DeliveryEventData }) {
+  const type = event.type ?? 'unknown';
+  if (type !== 'email.received') {
+    const status = fromResendEvent(type);
+    const id = event.data?.email_id;
+    if (!status || !id) return { stored: 0, ignored: type };
+    return { stored: 0, updated: await applyDeliveryStatus(id, status, describeBounce(event.data?.bounce, event.data?.failed)) };
+  }
+  if (!event.data) return { stored: 0, ignored: type };
 
   const meta = event.data;
   const resendId = meta.email_id || meta.id || '';

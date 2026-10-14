@@ -89,42 +89,6 @@ export async function authenticateAgentToken(
 }
 
 /**
- * Next.js App Router helper to extract and authenticate an agent token from standard Request
- */
-export async function validateAgentRequest(
-  request: Request | globalThis.Request,
-  requiredScope?: string
-): Promise<{ authorized: boolean; response?: Response | globalThis.Response; agent?: ValidatedAgentAuth }> {
-  const authHeader =
-    'headers' in request && typeof request.headers.get === 'function'
-      ? (request as globalThis.Request).headers.get('authorization') || (request as globalThis.Request).headers.get('x-agent-key')
-      : (request as any).headers?.authorization || (request as any).headers?.['x-agent-key'];
-
-  if (!authHeader) {
-    return {
-      authorized: false,
-      response: Response.json(
-        { success: false, error: 'Missing agent credentials in Authorization or x-agent-key header.' },
-        { status: 401 }
-      ) as any,
-    };
-  }
-
-  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : authHeader.trim();
-  const authResult = await authenticateAgentToken(token, requiredScope);
-
-  if (!authResult.valid) {
-    const statusCode = authResult.error?.startsWith('Forbidden') ? 403 : 401;
-    return {
-      authorized: false,
-      response: Response.json({ success: false, error: authResult.error }, { status: statusCode }) as any,
-    };
-  }
-
-  return { authorized: true, agent: authResult.agent };
-}
-
-/**
  * Express middleware for Jarvis root endpoints
  */
 export function requireAgentScope(requiredScope?: string) {
@@ -192,6 +156,10 @@ export async function setOrUpdateJarvisKey(customRawKey?: string): Promise<{ raw
   let id: string;
 
   if (customRawKey && customRawKey.trim()) {
+    // This key carries super_admin + send_as_any: refuse anything guessable.
+    if (customRawKey.trim().length < 32) {
+      throw new Error('A custom Jarvis key must be at least 32 characters. Leave it empty to generate one.');
+    }
     rawKey = customRawKey.trim();
     keyHash = hashAgentKey(rawKey);
     id = `ak_jrv_${Date.now()}`;

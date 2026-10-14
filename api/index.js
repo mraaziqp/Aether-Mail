@@ -61,12 +61,25 @@ var init_schema = __esm({
       /** 'inbound' | 'outbound' */
       direction: text("direction").notNull().default("inbound"),
       folder: text("folder"),
-      has_attachments: boolean("has_attachments").notNull().default(false)
+      has_attachments: boolean("has_attachments").notNull().default(false),
+      /**
+       * Outbound only. 'sent' (a transport accepted it), then from the provider:
+       * 'delivered' | 'delivery_delayed' | 'bounced' | 'complained' | 'failed'.
+       */
+      delivery_status: text("delivery_status"),
+      /** Bounce diagnostic or other provider detail for the latest status. */
+      delivery_detail: text("delivery_detail"),
+      delivery_updated_at: timestamp("delivery_updated_at"),
+      /** The transport's own id (Resend email id), used to look the message up. */
+      provider_message_id: text("provider_message_id"),
+      /** Transport that accepted the message, e.g. 'Resend'. */
+      transport: text("transport")
     }, (t) => [
       index("emails_received_at_idx").on(t.received_at),
       index("emails_account_received_idx").on(t.account_id, t.received_at),
       index("emails_category_idx").on(t.category),
       index("emails_thread_idx").on(t.thread_id),
+      index("emails_provider_message_idx").on(t.provider_message_id),
       // The same message can legitimately sit in two connected mailboxes (sent to
       // contact@ and info@): dedupe per account, not globally.
       uniqueIndex("emails_account_message_uidx").on(t.account_id, t.message_id)
@@ -153,6 +166,9 @@ var init_db = __esm({
           try {
             const parsed = new URL(rawUrl);
             parsed.searchParams.delete("channel_binding");
+            if (["prefer", "require", "verify-ca"].includes(parsed.searchParams.get("sslmode") ?? "")) {
+              parsed.searchParams.set("sslmode", "verify-full");
+            }
             cleanUrl = parsed.toString();
           } catch {
             cleanUrl = rawUrl.replace(/[?&]channel_binding=[^&]*/g, "");
@@ -502,11 +518,152 @@ var init_store_email = __esm({
   }
 });
 
+// src/lib/recipient-check.ts
+var recipient_check_exports = {};
+__export(recipient_check_exports, {
+  checkRecipients: () => checkRecipients,
+  describeProblems: () => describeProblems,
+  domainAcceptsMail: () => domainAcceptsMail,
+  editDistance: () => editDistance,
+  isValidAddress: () => isValidAddress,
+  suggestDomains: () => suggestDomains
+});
+import { promises as dns } from "node:dns";
+async function domainAcceptsMail(domain) {
+  const d = domain.toLowerCase();
+  const hit = cache.get(d);
+  if (hit && Date.now() - hit.at < CACHE_MS) return hit;
+  let out;
+  try {
+    const mx = await withTimeout(dns.resolveMx(d), 5e3);
+    if (mx.length === 1 && (mx[0].exchange === "" || mx[0].exchange === ".")) {
+      out = { verdict: "no-mail", reason: `${d} publishes a null MX: it does not accept email.` };
+    } else if (mx.length > 0) {
+      out = { verdict: "ok" };
+    } else {
+      out = await implicitMx(d);
+    }
+  } catch (err) {
+    const code = err.code ?? "";
+    if (code === "ENOTFOUND") {
+      out = { verdict: "no-domain", reason: `The domain ${d} does not exist.` };
+    } else if (NOT_FOUND.has(code)) {
+      out = await implicitMx(d);
+    } else {
+      out = { verdict: "unverified", reason: `Could not look up ${d} (${code || err.message}).` };
+    }
+  }
+  if (out.verdict !== "unverified") cache.set(d, { ...out, at: Date.now() });
+  return out;
+}
+async function implicitMx(d) {
+  const has2 = async (fn) => {
+    try {
+      return (await withTimeout(fn(), 5e3)).length > 0;
+    } catch {
+      return false;
+    }
+  };
+  if (await has2(() => dns.resolve4(d)) || await has2(() => dns.resolve6(d))) return { verdict: "ok" };
+  return { verdict: "no-mail", reason: `${d} has no mail server (no MX or A record).` };
+}
+function editDistance(a, b) {
+  if (a === b) return 0;
+  if (Math.abs(a.length - b.length) > 3) return 99;
+  const d = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)]);
+  for (let j = 1; j <= b.length; j++) d[0][j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + cost);
+      if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) d[i][j] = Math.min(d[i][j], d[i - 2][j - 2] + 1);
+    }
+  }
+  return d[a.length][b.length];
+}
+function suggestDomains(domain, known) {
+  const d = domain.toLowerCase();
+  const out = [];
+  for (const k of /* @__PURE__ */ new Set([...known, ...COMMON_DOMAINS])) {
+    if (!k || k === d) continue;
+    const dist = editDistance(d, k);
+    if (dist <= 2) out.push({ domain: k, dist });
+  }
+  return out.sort((a, b) => a.dist - b.dist).map((x) => x.domain);
+}
+async function verifiedSuggestion(domain, known) {
+  for (const candidate of suggestDomains(domain, known).slice(0, 3)) {
+    if ((await domainAcceptsMail(candidate)).verdict === "ok") return candidate;
+  }
+  return null;
+}
+async function checkRecipients(addresses, knownDomains2 = []) {
+  const known = [...knownDomains2];
+  return Promise.all(
+    addresses.map(async (raw) => {
+      const address = raw.trim().toLowerCase();
+      const at = address.lastIndexOf("@");
+      const domain = at > 0 ? address.slice(at + 1) : "";
+      const local = at > 0 ? address.slice(0, at) : address;
+      const suggestion = async () => {
+        const s = domain ? await verifiedSuggestion(domain, known) : null;
+        return s ? `${local}@${s}` : void 0;
+      };
+      if (!isValidAddress(address)) {
+        return { address, verdict: "invalid", reason: `"${raw.trim()}" is not a valid email address.` };
+      }
+      const res = await domainAcceptsMail(domain);
+      if (res.verdict === "unverified") return { address, ...res };
+      if (res.verdict === "ok") {
+        const near = COMMON_DOMAINS.find((c) => c.length >= 8 && c !== domain && editDistance(domain, c) === 1);
+        return near ? { address, verdict: "ok", warning: `${domain} looks like a typo of ${near}.`, suggestion: `${local}@${near}` } : { address, verdict: "ok" };
+      }
+      return { address, ...res, suggestion: await suggestion() };
+    })
+  );
+}
+function describeProblems(checks) {
+  const bad = checks.filter((c) => c.verdict !== "ok" && c.verdict !== "unverified");
+  if (!bad.length) return null;
+  return bad.map((c) => `${c.reason}${c.suggestion ? ` Did you mean ${c.suggestion}?` : ""}`).join(" ");
+}
+var ADDRESS_RE, isValidAddress, COMMON_DOMAINS, CACHE_MS, cache, withTimeout, NOT_FOUND;
+var init_recipient_check = __esm({
+  "src/lib/recipient-check.ts"() {
+    ADDRESS_RE = /^(?!\.)(?!.*\.\.)[a-z0-9!#$%&'*+/=?^_`{|}~.-]{1,64}(?<!\.)@(?=.{4,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}$/i;
+    isValidAddress = (addr) => ADDRESS_RE.test(addr.trim());
+    COMMON_DOMAINS = [
+      "gmail.com",
+      "googlemail.com",
+      "outlook.com",
+      "hotmail.com",
+      "live.com",
+      "yahoo.com",
+      "icloud.com",
+      "me.com",
+      "proton.me",
+      "protonmail.com",
+      "zoho.com",
+      "mweb.co.za",
+      "telkomsa.net",
+      "webmail.co.za",
+      "vodamail.co.za",
+      "afrihost.co.za"
+    ];
+    CACHE_MS = 10 * 6e4;
+    cache = /* @__PURE__ */ new Map();
+    withTimeout = (p, ms) => Promise.race([p, new Promise((_, reject) => setTimeout(() => reject(Object.assign(new Error("DNS timeout"), { code: "ETIMEOUT" })), ms))]);
+    NOT_FOUND = /* @__PURE__ */ new Set(["ENOTFOUND", "ENODATA", "NXDOMAIN"]);
+  }
+});
+
 // src/lib/contacts.ts
 var contacts_exports = {};
 __export(contacts_exports, {
-  getContacts: () => getContacts
+  getContacts: () => getContacts,
+  knownDomains: () => knownDomains
 });
+import { desc } from "drizzle-orm";
 function parseContactsFromHeader(raw) {
   if (!raw) return [];
   const results = [];
@@ -521,8 +678,8 @@ function parseContactsFromHeader(raw) {
   }
   return results;
 }
-async function getContacts(query, limit = 50) {
-  const accs = await db.select().from(accounts);
+async function buildContacts() {
+  const accs = await db.select({ email_address: accounts.email_address, display_name: accounts.display_name }).from(accounts);
   const contactsMap = /* @__PURE__ */ new Map();
   for (const a of accs) {
     contactsMap.set(a.email_address.toLowerCase(), {
@@ -534,33 +691,281 @@ async function getContacts(query, limit = 50) {
   }
   const rows = await db.select({
     sender: emails.sender,
-    recipients: emails.recipients
-  }).from(emails).limit(1e3);
+    recipients: emails.recipients,
+    delivery_status: emails.delivery_status
+  }).from(emails).orderBy(desc(emails.received_at)).limit(2e3);
   for (const r of rows) {
+    const undeliverable = r.delivery_status === "bounced" || r.delivery_status === "failed";
     for (const c of parseContactsFromHeader(r.sender)) {
       const existing = contactsMap.get(c.email) || { email: c.email, name: c.name, count: 0, isAccount: false };
       if (!existing.name && c.name) existing.name = c.name;
       existing.count++;
       contactsMap.set(c.email, existing);
     }
-    for (const c of parseContactsFromHeader(r.recipients)) {
+    for (const c of undeliverable ? [] : parseContactsFromHeader(r.recipients)) {
       const existing = contactsMap.get(c.email) || { email: c.email, name: c.name, count: 0, isAccount: false };
       if (!existing.name && c.name) existing.name = c.name;
       existing.count++;
       contactsMap.set(c.email, existing);
     }
   }
-  let list = Array.from(contactsMap.values()).sort((a, b) => b.count - a.count);
+  return contactsMap;
+}
+async function getContacts(query, limit = 50) {
+  let list = Array.from((await buildContacts()).values()).sort((a, b) => b.count - a.count);
   if (query?.trim()) {
     const q = query.trim().toLowerCase();
     list = list.filter((c) => c.email.toLowerCase().includes(q) || c.name && c.name.toLowerCase().includes(q));
   }
   return list.slice(0, Math.max(1, Math.min(limit, 200)));
 }
+async function knownDomains() {
+  if (domainCache && Date.now() - domainCache.at < 5 * 6e4) return domainCache.domains;
+  const domains2 = /* @__PURE__ */ new Set();
+  for (const email of (await buildContacts()).keys()) domains2.add(email.split("@")[1]);
+  domainCache = { at: Date.now(), domains: domains2 };
+  return domains2;
+}
+var domainCache;
 var init_contacts = __esm({
   "src/lib/contacts.ts"() {
     init_db();
     init_schema();
+    domainCache = null;
+  }
+});
+
+// src/lib/resend.ts
+async function resendApi(path2, init = {}) {
+  const key2 = process.env.RESEND_API_KEY?.trim();
+  if (!key2) throw new Error("RESEND_API_KEY not set");
+  const res = await fetch(`${base()}${path2}`, {
+    method: init.method ?? "GET",
+    headers: {
+      Authorization: `Bearer ${key2}`,
+      ...init.body !== void 0 ? { "Content-Type": "application/json" } : {},
+      ...init.headers
+    },
+    body: init.body !== void 0 ? JSON.stringify(init.body) : void 0,
+    signal: AbortSignal.timeout(init.timeoutMs ?? 15e3)
+  });
+  const body = await res.json().catch(() => ({}));
+  return { ok: res.ok, status: res.status, body };
+}
+var resendConfigured, base;
+var init_resend = __esm({
+  "src/lib/resend.ts"() {
+    resendConfigured = () => Boolean(process.env.RESEND_API_KEY?.trim());
+    base = () => (process.env.RESEND_API_URL?.trim() || "https://api.resend.com").replace(/\/$/, "");
+  }
+});
+
+// src/lib/notify.ts
+async function pushAlert(input) {
+  const topic = process.env.NTFY_TOPIC?.trim();
+  if (!topic) return false;
+  const server = (process.env.NTFY_URL?.trim() || "https://ntfy.sh").replace(/\/$/, "");
+  const headers = { "Content-Type": "application/json" };
+  if (process.env.NTFY_TOKEN?.trim()) headers.Authorization = `Bearer ${process.env.NTFY_TOKEN.trim()}`;
+  try {
+    const res = await fetch(server, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        topic,
+        title: `AetherMail \xB7 ${input.subject.slice(0, 80)}`,
+        message: `${input.account ? `To: ${input.account}
+` : ""}From: ${input.sender}
+
+${input.summary.slice(0, 280)}`,
+        priority: 4,
+        tags: ["envelope", "warning"],
+        ...process.env.APP_URL ? { click: process.env.APP_URL } : {}
+      }),
+      signal: AbortSignal.timeout(4e3)
+    });
+    return res.ok;
+  } catch (err) {
+    console.warn("[ntfy] push failed:", err.message);
+    return false;
+  }
+}
+var init_notify = __esm({
+  "src/lib/notify.ts"() {
+  }
+});
+
+// src/lib/delivery.ts
+var delivery_exports = {};
+__export(delivery_exports, {
+  FINAL_STATUSES: () => FINAL_STATUSES,
+  applyDeliveryStatus: () => applyDeliveryStatus,
+  backfillUntrackedSends: () => backfillUntrackedSends,
+  describeBounce: () => describeBounce,
+  fromResendEvent: () => fromResendEvent,
+  reconcileDeliveries: () => reconcileDeliveries,
+  refreshDelivery: () => refreshDelivery
+});
+import { and as and2, desc as desc3, eq as eq5, gt, inArray as inArray2, isNull, lt, notInArray, or as or3, sql } from "drizzle-orm";
+function fromResendEvent(event) {
+  const e = event.replace(/^email\./, "");
+  switch (e) {
+    case "queued":
+    case "scheduled":
+    case "sent":
+      return "sent";
+    case "delivered":
+    case "opened":
+    // opens and clicks imply delivery
+    case "clicked":
+      return "delivered";
+    case "delivery_delayed":
+      return "delivery_delayed";
+    case "bounced":
+      return "bounced";
+    case "complained":
+      return "complained";
+    case "failed":
+    case "canceled":
+      return "failed";
+    default:
+      return null;
+  }
+}
+function describeBounce(b, failed) {
+  if (failed?.reason) return failed.reason;
+  if (!b) return null;
+  const diag = Array.isArray(b.diagnosticCode) ? b.diagnosticCode.join("; ") : b.diagnosticCode;
+  const kind = [b.type, b.subType].filter(Boolean).join("/");
+  return [diag?.replace(/^smtp;\s*/i, ""), kind && `(${kind})`].filter(Boolean).join(" ") || b.message || null;
+}
+async function applyDeliveryStatus(providerId, status, detail) {
+  const rows = await db.select({ id: emails.id, status: emails.delivery_status, subject: emails.subject, recipients: emails.recipients }).from(emails).where(eq5(emails.provider_message_id, providerId));
+  let changed = 0;
+  for (const row of rows) {
+    const prev = row.status;
+    if (prev === status || prev && RANK[prev] > RANK[status]) continue;
+    const problem = PROBLEM_STATUSES.includes(status);
+    await db.update(emails).set({
+      delivery_status: status,
+      delivery_detail: detail ?? null,
+      delivery_updated_at: /* @__PURE__ */ new Date(),
+      // A bounce has to be seen: surface it as an unread alert.
+      ...problem ? { requires_alert: true, is_read: false } : {}
+    }).where(eq5(emails.id, row.id));
+    changed++;
+    if (problem) {
+      void pushAlert({
+        subject: `Not delivered: ${row.subject}`,
+        sender: "AetherMail delivery",
+        summary: `${status} \u2014 ${row.recipients ?? ""}${detail ? `: ${detail}` : ""}`
+      });
+    }
+  }
+  return changed;
+}
+async function refreshDelivery(emailId) {
+  const [row] = await db.select({
+    id: emails.id,
+    provider_message_id: emails.provider_message_id,
+    transport: emails.transport,
+    delivery_status: emails.delivery_status,
+    delivery_detail: emails.delivery_detail,
+    delivery_updated_at: emails.delivery_updated_at
+  }).from(emails).where(eq5(emails.id, emailId)).limit(1);
+  if (!row) return null;
+  const pending = !row.delivery_status || !FINAL_STATUSES.includes(row.delivery_status);
+  if (pending && row.provider_message_id && row.transport === "Resend" && resendConfigured()) {
+    try {
+      const r = await resendApi(
+        `/emails/${encodeURIComponent(row.provider_message_id)}`,
+        { timeoutMs: 8e3 }
+      );
+      const status = r.ok && r.body.last_event ? fromResendEvent(r.body.last_event) : null;
+      if (status) {
+        await applyDeliveryStatus(row.provider_message_id, status, describeBounce(r.body.bounce, r.body.failed));
+        const [fresh] = await db.select({ delivery_status: emails.delivery_status, delivery_detail: emails.delivery_detail, delivery_updated_at: emails.delivery_updated_at }).from(emails).where(eq5(emails.id, emailId));
+        return { ...row, ...fresh };
+      }
+    } catch (err) {
+      console.warn("[delivery] refresh failed:", err.message);
+    }
+  }
+  return row;
+}
+async function reconcileDeliveries(opts = {}) {
+  if (!resendConfigured()) return { checked: 0 };
+  const rows = await db.select({ id: emails.id }).from(emails).where(
+    and2(
+      eq5(emails.direction, "outbound"),
+      eq5(emails.transport, "Resend"),
+      sql`${emails.provider_message_id} is not null`,
+      or3(isNull(emails.delivery_status), notInArray(emails.delivery_status, FINAL_STATUSES)),
+      gt(emails.received_at, new Date(Date.now() - 3 * 864e5)),
+      // Leave messages alone for a minute after the last check.
+      or3(isNull(emails.delivery_updated_at), lt(emails.delivery_updated_at, new Date(Date.now() - 6e4)))
+    )
+  ).orderBy(desc3(emails.received_at)).limit(opts.limit ?? 10);
+  let checked = 0;
+  for (const r of rows) {
+    if (opts.deadline && Date.now() > opts.deadline - 2e3) break;
+    const before = await refreshDelivery(r.id);
+    if (before && !FINAL_STATUSES.includes(before.delivery_status)) {
+      await db.update(emails).set({ delivery_updated_at: /* @__PURE__ */ new Date() }).where(eq5(emails.id, r.id));
+    }
+    checked++;
+  }
+  return { checked };
+}
+async function backfillUntrackedSends() {
+  if (!resendConfigured()) return { matched: 0 };
+  const rows = await db.select({ id: emails.id, subject: emails.subject, recipients: emails.recipients, received_at: emails.received_at }).from(emails).where(
+    and2(
+      eq5(emails.direction, "outbound"),
+      isNull(emails.transport),
+      isNull(emails.provider_message_id),
+      gt(emails.received_at, new Date(Date.now() - 14 * 864e5))
+    )
+  ).limit(50);
+  if (!rows.length) return { matched: 0 };
+  let log = [];
+  try {
+    const r = await resendApi("/emails?limit=100", { timeoutMs: 1e4 });
+    if (r.ok) log = r.body.data ?? [];
+  } catch (err) {
+    console.warn("[delivery] backfill list failed:", err.message);
+    return { matched: 0 };
+  }
+  let matched = 0;
+  const untracked = [];
+  for (const row of rows) {
+    const firstRcpt = (row.recipients ?? "").split(",")[0]?.trim().toLowerCase();
+    const at = row.received_at?.getTime() ?? 0;
+    const hit = log.find(
+      (e) => e.subject === row.subject && (e.to ?? []).some((t) => t.toLowerCase() === firstRcpt) && e.created_at && Math.abs(new Date(e.created_at.replace(" ", "T").replace(/\+00$/, "Z")).getTime() - at) < 5 * 6e4
+    );
+    if (!hit) {
+      untracked.push(row.id);
+      continue;
+    }
+    await db.update(emails).set({ provider_message_id: hit.id, transport: "Resend", delivery_status: "sent" }).where(eq5(emails.id, row.id));
+    const status = hit.last_event ? fromResendEvent(hit.last_event) : null;
+    if (status && status !== "sent") await refreshDelivery(row.id);
+    matched++;
+  }
+  if (untracked.length) await db.update(emails).set({ transport: "untracked" }).where(inArray2(emails.id, untracked));
+  return { matched };
+}
+var FINAL_STATUSES, PROBLEM_STATUSES, RANK;
+var init_delivery = __esm({
+  "src/lib/delivery.ts"() {
+    init_db();
+    init_schema();
+    init_resend();
+    init_notify();
+    FINAL_STATUSES = ["delivered", "bounced", "complained", "failed"];
+    PROBLEM_STATUSES = ["bounced", "complained", "failed"];
+    RANK = { sent: 1, delivery_delayed: 2, delivered: 3, bounced: 3, failed: 3, complained: 4 };
   }
 });
 
@@ -600,45 +1005,10 @@ var init_classify = __esm({
   }
 });
 
-// src/lib/notify.ts
-async function pushAlert(input) {
-  const topic = process.env.NTFY_TOPIC?.trim();
-  if (!topic) return false;
-  const server = (process.env.NTFY_URL?.trim() || "https://ntfy.sh").replace(/\/$/, "");
-  const headers = { "Content-Type": "application/json" };
-  if (process.env.NTFY_TOKEN?.trim()) headers.Authorization = `Bearer ${process.env.NTFY_TOKEN.trim()}`;
-  try {
-    const res = await fetch(server, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        topic,
-        title: `AetherMail \xB7 ${input.subject.slice(0, 80)}`,
-        message: `${input.account ? `To: ${input.account}
-` : ""}From: ${input.sender}
-
-${input.summary.slice(0, 280)}`,
-        priority: 4,
-        tags: ["envelope", "warning"],
-        ...process.env.APP_URL ? { click: process.env.APP_URL } : {}
-      }),
-      signal: AbortSignal.timeout(4e3)
-    });
-    return res.ok;
-  } catch (err) {
-    console.warn("[ntfy] push failed:", err.message);
-    return false;
-  }
-}
-var init_notify = __esm({
-  "src/lib/notify.ts"() {
-  }
-});
-
 // src/lib/imap-sync.ts
 import { ImapFlow } from "imapflow";
 import { simpleParser } from "mailparser";
-import { and as and2, eq as eq5 } from "drizzle-orm";
+import { and as and3, eq as eq6 } from "drizzle-orm";
 function resolveImapProvider(emailAddress, cfg = {}) {
   const domain = emailAddress.split("@")[1]?.toLowerCase() ?? "";
   const known = PROVIDERS[domain];
@@ -745,7 +1115,7 @@ async function syncMailbox(account, password, opts = {}) {
     const boxes = await client.list();
     const folders = pickFolders(boxes, target);
     const states = new Map(
-      (await db.select().from(sync_state).where(eq5(sync_state.account_id, account.id))).map((s) => [s.folder, s])
+      (await db.select().from(sync_state).where(eq6(sync_state.account_id, account.id))).map((s) => [s.folder, s])
     );
     for (const folder of folders) {
       if (Date.now() > deadline) {
@@ -888,7 +1258,7 @@ async function buildRecord(input) {
   };
 }
 async function resetSyncState(accountId, folder) {
-  await db.delete(sync_state).where(folder ? and2(eq5(sync_state.account_id, accountId), eq5(sync_state.folder, folder)) : eq5(sync_state.account_id, accountId));
+  await db.delete(sync_state).where(folder ? and3(eq6(sync_state.account_id, accountId), eq6(sync_state.folder, folder)) : eq6(sync_state.account_id, accountId));
 }
 var PROVIDERS, addressList, headerText, MAX_BODY_CHARS, MAX_SOURCE_BYTES;
 var init_imap_sync = __esm({
@@ -927,7 +1297,7 @@ var init_imap_sync = __esm({
 });
 
 // src/lib/sync-runner.ts
-import { eq as eq6, inArray as inArray2, sql } from "drizzle-orm";
+import { eq as eq7, inArray as inArray3, sql as sql2 } from "drizzle-orm";
 function envPasswords() {
   const map = /* @__PURE__ */ new Map();
   const add = (user, pass) => {
@@ -946,7 +1316,7 @@ async function routingMap() {
   return new Map(rows.map((r) => [r.email.trim().toLowerCase(), r.id]));
 }
 async function acquireLease(accountId, force) {
-  const res = await db.execute(sql`
+  const res = await db.execute(sql2`
     UPDATE accounts
        SET sync_lease_until = now() + (${LEASE_SECONDS} * interval '1 second'), sync_status = 'syncing'
      WHERE id = ${accountId}
@@ -954,24 +1324,24 @@ async function acquireLease(accountId, force) {
        AND (${force} OR last_synced_at IS NULL OR last_synced_at < now() - (${MIN_INTERVAL_MS} * interval '1 millisecond'))
      RETURNING id`);
   if (res.rows.length > 0) return "ok";
-  const [row] = await db.select({ lease: accounts.sync_lease_until }).from(accounts).where(eq6(accounts.id, accountId));
+  const [row] = await db.select({ lease: accounts.sync_lease_until }).from(accounts).where(eq7(accounts.id, accountId));
   return row?.lease && row.lease > /* @__PURE__ */ new Date() ? "busy" : "fresh";
 }
 async function syncOneAccount(acc, opts = {}) {
-  const base = { accountId: acc.id, email: acc.email_address };
+  const base2 = { accountId: acc.id, email: acc.email_address };
   const password = passwordFor(acc, opts.env);
   if (!password && acc.provider === "resend") {
     if (acc.last_sync_error || acc.sync_status !== "synced") {
-      await db.update(accounts).set({ sync_status: "synced", last_sync_error: null }).where(eq6(accounts.id, acc.id));
+      await db.update(accounts).set({ sync_status: "synced", last_sync_error: null }).where(eq7(accounts.id, acc.id));
     }
-    return { ...base, status: "skipped", imported: 0 };
+    return { ...base2, status: "skipped", imported: 0 };
   }
   if (!password) {
-    await db.update(accounts).set({ sync_status: "error", last_sync_error: "No mailbox password saved. Reconnect this mailbox to resume syncing." }).where(eq6(accounts.id, acc.id));
-    return { ...base, status: "no-credentials", imported: 0, error: "No mailbox password saved" };
+    await db.update(accounts).set({ sync_status: "error", last_sync_error: "No mailbox password saved. Reconnect this mailbox to resume syncing." }).where(eq7(accounts.id, acc.id));
+    return { ...base2, status: "no-credentials", imported: 0, error: "No mailbox password saved" };
   }
   const lease = await acquireLease(acc.id, Boolean(opts.force));
-  if (lease !== "ok") return { ...base, status: lease === "busy" ? "busy" : "skipped", imported: 0 };
+  if (lease !== "ok") return { ...base2, status: lease === "busy" ? "busy" : "skipped", imported: 0 };
   let result;
   try {
     result = await syncMailbox(acc, password, {
@@ -986,12 +1356,12 @@ async function syncOneAccount(acc, opts = {}) {
     last_sync_error: result.success ? null : result.error ?? "Unknown sync error",
     last_synced_at: result.success ? /* @__PURE__ */ new Date() : acc.last_synced_at,
     sync_lease_until: null
-  }).where(eq6(accounts.id, acc.id));
+  }).where(eq7(accounts.id, acc.id));
   if (result.newIds?.length) {
     await refineWithAi(result.newIds, opts.deadline);
   }
   return {
-    ...base,
+    ...base2,
     status: result.success ? "ok" : "error",
     imported: result.imported,
     error: result.error,
@@ -1011,18 +1381,32 @@ async function syncAllAccounts(opts = {}) {
       (err) => ({ accountId: acc.id, email: acc.email_address, status: "error", imported: 0, error: err.message })
     )
   );
+  const delivery = await trackDeliveries(deadline);
   return {
     success: true,
     imported: reports.reduce((n, r) => n + r.imported, 0),
     reports,
+    delivery,
     durationMs: Date.now() - started,
     syncedAt: (/* @__PURE__ */ new Date()).toISOString()
   };
 }
+async function trackDeliveries(deadline) {
+  try {
+    if (!backfillDone) {
+      backfillDone = true;
+      await backfillUntrackedSends();
+    }
+    return await reconcileDeliveries({ deadline });
+  } catch (err) {
+    console.warn("[delivery] reconcile skipped:", err.message);
+    return { checked: 0 };
+  }
+}
 async function refineWithAi(ids, deadline) {
   if (!isAiConfigured()) return;
   const cap = Number(process.env.AI_CLASSIFY_PER_SYNC) || 8;
-  const rows = await db.select({ id: emails.id, subject: emails.subject, sender: emails.sender, body: emails.body_snippet, full: emails.full_body, category: emails.category }).from(emails).where(inArray2(emails.id, ids.slice(-cap)));
+  const rows = await db.select({ id: emails.id, subject: emails.subject, sender: emails.sender, body: emails.body_snippet, full: emails.full_body, category: emails.category }).from(emails).where(inArray3(emails.id, ids.slice(-cap)));
   await mapLimit(rows, 3, async (row) => {
     if (row.category === "spam") return;
     if (deadline && Date.now() > deadline - 3e3) return;
@@ -1030,7 +1414,7 @@ async function refineWithAi(ids, deadline) {
       const text2 = row.full.replace(/<style[\s\S]*?<\/style>|<[^>]+>/gi, " ").replace(/\s+/g, " ").slice(0, 6e3);
       const ai = await classifyWithAi({ subject: row.subject, sender: row.sender, body: text2 || row.body });
       if (!ai) return;
-      await db.update(emails).set({ category: ai.category, ai_summary: ai.summary, requires_alert: ai.requires_alert }).where(eq6(emails.id, row.id));
+      await db.update(emails).set({ category: ai.category, ai_summary: ai.summary, requires_alert: ai.requires_alert }).where(eq7(emails.id, row.id));
     } catch (err) {
       console.warn("[sync] AI refinement skipped:", err.message);
     }
@@ -1090,7 +1474,7 @@ function watchInbox(acc, password) {
   const trigger = () => {
     if (debounce) clearTimeout(debounce);
     debounce = setTimeout(async () => {
-      const [fresh] = await db.select().from(accounts).where(eq6(accounts.id, acc.id));
+      const [fresh] = await db.select().from(accounts).where(eq7(accounts.id, acc.id));
       if (fresh) {
         const r = await syncOneAccount(fresh, { force: true }).catch(() => null);
         if (r?.imported) console.log(`[idle] ${acc.email_address}: +${r.imported}`);
@@ -1132,17 +1516,18 @@ function watchInbox(acc, password) {
     }
   };
 }
-var MIN_INTERVAL_MS, LEASE_SECONDS;
+var MIN_INTERVAL_MS, LEASE_SECONDS, backfillDone;
 var init_sync_runner = __esm({
   "src/lib/sync-runner.ts"() {
     init_db();
     init_schema();
     init_secrets();
     init_imap_sync();
-    init_secrets();
+    init_delivery();
     init_gemini();
     MIN_INTERVAL_MS = 15e3;
     LEASE_SECONDS = 120;
+    backfillDone = false;
   }
 });
 
@@ -1151,13 +1536,13 @@ var mailbox_service_exports = {};
 __export(mailbox_service_exports, {
   connectMailbox: () => connectMailbox
 });
-import { eq as eq7 } from "drizzle-orm";
+import { eq as eq8 } from "drizzle-orm";
 async function connectMailbox(input) {
   const email = input.email_address.trim().toLowerCase();
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new Error("Enter a valid email address.");
   const password = input.password.replace(/\s+/g, "");
   if (!password) throw new Error("A mailbox password (app password) is required.");
-  const [existing] = await db.select().from(accounts).where(eq7(accounts.email_address, email)).limit(1);
+  const [existing] = await db.select().from(accounts).where(eq8(accounts.email_address, email)).limit(1);
   const prevCfg = existing ? readMailboxConfig(existing.oauth_tokens) : {};
   const cfg = {
     ...input.imap_host?.trim() ? { imap_host: input.imap_host.trim(), imap_port: Number(input.imap_port) || 993 } : {
@@ -1181,7 +1566,7 @@ async function connectMailbox(input) {
       display_name: input.display_name?.trim() || existing.display_name,
       sync_status: "synced",
       last_sync_error: null
-    }).where(eq7(accounts.id, existing.id)).returning();
+    }).where(eq8(accounts.id, existing.id)).returning();
   } else {
     [account] = await db.insert(accounts).values({
       id: `acc_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
@@ -1212,7 +1597,7 @@ __export(resend_inbound_exports, {
   verifySvixSignature: () => verifySvixSignature
 });
 import crypto8 from "node:crypto";
-import { eq as eq9 } from "drizzle-orm";
+import { eq as eq10 } from "drizzle-orm";
 function verifySvixSignature(rawBody, headers, secret) {
   const id = String(headers["svix-id"] ?? "");
   const ts = String(headers["svix-timestamp"] ?? "");
@@ -1231,26 +1616,28 @@ function verifySvixSignature(rawBody, headers, secret) {
   });
 }
 async function fetchReceived(emailId) {
-  const key2 = process.env.RESEND_API_KEY?.trim();
-  if (!key2) return null;
+  if (!resendConfigured()) return null;
   try {
-    const base = (process.env.RESEND_API_URL?.trim() || "https://api.resend.com").replace(/\/$/, "");
-    const res = await fetch(`${base}/emails/receiving/${encodeURIComponent(emailId)}`, {
-      headers: { Authorization: `Bearer ${key2}` },
-      signal: AbortSignal.timeout(1e4)
-    });
+    const res = await resendApi(`/emails/receiving/${encodeURIComponent(emailId)}`, { timeoutMs: 1e4 });
     if (!res.ok) {
       console.warn(`[resend-inbound] fetch ${emailId} \u2192 HTTP ${res.status} (a send-only API key cannot read received mail)`);
       return null;
     }
-    return await res.json();
+    return res.body;
   } catch (err) {
     console.warn("[resend-inbound] fetch failed:", err.message);
     return null;
   }
 }
 async function ingestResendEvent(event) {
-  if (event.type !== "email.received" || !event.data) return { stored: 0, ignored: event.type ?? "unknown" };
+  const type = event.type ?? "unknown";
+  if (type !== "email.received") {
+    const status = fromResendEvent(type);
+    const id = event.data?.email_id;
+    if (!status || !id) return { stored: 0, ignored: type };
+    return { stored: 0, updated: await applyDeliveryStatus(id, status, describeBounce(event.data?.bounce, event.data?.failed)) };
+  }
+  if (!event.data) return { stored: 0, ignored: type };
   const meta = event.data;
   const resendId = meta.email_id || meta.id || "";
   const full = (meta.html || meta.text ? meta : null) ?? (resendId ? await fetchReceived(resendId) : null);
@@ -1260,10 +1647,10 @@ async function ingestResendEvent(event) {
   let stored = 0;
   const targets = recipients.filter((r) => !domain || r.endsWith(`@${domain}`));
   for (const rcpt of targets.length ? targets : recipients.slice(0, 1)) {
-    let [acc] = await db.select().from(accounts).where(eq9(accounts.email_address, rcpt)).limit(1);
+    let [acc] = await db.select().from(accounts).where(eq10(accounts.email_address, rcpt)).limit(1);
     if (!acc) {
       [acc] = await db.insert(accounts).values({ id: `acc_rs_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`, provider: "resend", email_address: rcpt, sync_status: "synced" }).onConflictDoNothing().returning();
-      if (!acc) [acc] = await db.select().from(accounts).where(eq9(accounts.email_address, rcpt)).limit(1);
+      if (!acc) [acc] = await db.select().from(accounts).where(eq10(accounts.email_address, rcpt)).limit(1);
     }
     const sender = msg.from || "unknown sender";
     const subject = msg.subject?.trim() || "(No Subject)";
@@ -1306,6 +1693,8 @@ var init_resend_inbound = __esm({
     init_notify();
     init_store_email();
     init_business_mailboxes();
+    init_resend();
+    init_delivery();
     toArray = (v) => Array.isArray(v) ? v : v ? [v] : [];
     bareAddress = (s) => (s.match(/<([^>]+)>/)?.[1] ?? s).trim().toLowerCase();
   }
@@ -1315,7 +1704,7 @@ var init_resend_inbound = __esm({
 init_db();
 import express from "express";
 import path from "path";
-import { and as and4, desc as desc3, eq as eq10, ilike as ilike2, lt, or as or3, sql as sql3 } from "drizzle-orm";
+import { and as and5, desc as desc5, eq as eq11, ilike as ilike2, lt as lt2, or as or4, sql as sql4 } from "drizzle-orm";
 
 // src/db/ensure-schema.ts
 init_db();
@@ -1354,6 +1743,12 @@ ALTER TABLE emails ADD COLUMN IF NOT EXISTS recipients text;
 ALTER TABLE emails ADD COLUMN IF NOT EXISTS direction text DEFAULT 'inbound' NOT NULL;
 ALTER TABLE emails ADD COLUMN IF NOT EXISTS folder text;
 ALTER TABLE emails ADD COLUMN IF NOT EXISTS has_attachments boolean DEFAULT false NOT NULL;
+ALTER TABLE emails ADD COLUMN IF NOT EXISTS delivery_status text;
+ALTER TABLE emails ADD COLUMN IF NOT EXISTS delivery_detail text;
+ALTER TABLE emails ADD COLUMN IF NOT EXISTS delivery_updated_at timestamp;
+ALTER TABLE emails ADD COLUMN IF NOT EXISTS provider_message_id text;
+ALTER TABLE emails ADD COLUMN IF NOT EXISTS transport text;
+CREATE INDEX IF NOT EXISTS emails_provider_message_idx ON emails (provider_message_id);
 CREATE INDEX IF NOT EXISTS emails_received_at_idx ON emails (received_at);
 CREATE INDEX IF NOT EXISTS emails_account_received_idx ON emails (account_id, received_at);
 CREATE INDEX IF NOT EXISTS emails_category_idx ON emails (category);
@@ -1410,10 +1805,19 @@ CREATE TABLE IF NOT EXISTS mailboxes (
   created_at timestamp DEFAULT now()
 );
 `;
+var SCHEMA_VERSION = "aethermail-schema:2026-10-14";
+async function migrateIfNeeded() {
+  const { rows } = await pool.query(
+    `SELECT obj_description(to_regclass('public.emails'), 'pg_class') AS v`
+  );
+  if (rows[0]?.v === SCHEMA_VERSION) return;
+  await pool.query(`${DDL}
+COMMENT ON TABLE emails IS '${SCHEMA_VERSION}';`);
+}
 var ready = null;
 function ensureSchema() {
   if (!ready) {
-    ready = pool.query(DDL).then(
+    ready = migrateIfNeeded().then(
       async () => {
         const { ensureBusinessMailboxes: ensureBusinessMailboxes2 } = await Promise.resolve().then(() => (init_business_mailboxes(), business_mailboxes_exports));
         await ensureBusinessMailboxes2().catch((err) => console.warn("[schema] business mailboxes not seeded:", err.message));
@@ -1436,18 +1840,28 @@ init_db();
 init_schema();
 init_secrets();
 init_store_email();
+init_recipient_check();
+init_contacts();
+init_resend();
 import crypto2 from "node:crypto";
 import nodemailer from "nodemailer";
 import { eq, or } from "drizzle-orm";
 var EMAIL_RE = /^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/;
-var cleanEmailList = (raw) => {
-  if (!raw) return [];
-  const parts = Array.isArray(raw) ? raw : raw.split(/[,;\n]+/);
-  return parts.map((r) => {
-    const t = r.trim();
+var parseEmailList = (raw) => {
+  if (!raw) return { valid: [], invalid: [] };
+  const parts = Array.isArray(raw) ? raw : String(raw).split(/[,;\n]+/);
+  const valid = [];
+  const invalid = [];
+  for (const r of parts) {
+    const t = String(r).trim();
+    if (!t) continue;
     const angle = t.match(/<([^>]+)>/);
-    return (angle ? angle[1] : t).trim();
-  }).filter((r) => EMAIL_RE.test(r));
+    const addr = (angle ? angle[1] : t).trim().toLowerCase();
+    if (isValidAddress(addr)) {
+      if (!valid.includes(addr)) valid.push(addr);
+    } else invalid.push(t);
+  }
+  return { valid, invalid };
 };
 var htmlToText = (html) => html.replace(/<style[\s\S]*?<\/style>/gi, "").replace(/<br\s*\/?>/gi, "\n").replace(/<\/(p|div|h[1-6]|li|tr)>/gi, "\n").replace(/<[^>]+>/g, "").replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/\n{3,}/g, "\n\n").trim();
 function gmailPasswords() {
@@ -1500,50 +1914,70 @@ async function viaSmtp(env, server, overrides = {}) {
   });
   return info.messageId || env.messageId;
 }
-var resendBase = () => (process.env.RESEND_API_URL?.trim() || "https://api.resend.com").replace(/\/$/, "");
+var sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function viaResend(env) {
-  const key2 = process.env.RESEND_API_KEY?.trim();
-  if (!key2) throw new Error("RESEND_API_KEY not set");
-  const res = await fetch(`${resendBase()}/emails`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${key2}`,
-      "Content-Type": "application/json",
-      "Idempotency-Key": env.messageId
-    },
-    body: JSON.stringify({
-      from: `${env.fromName} <${env.from}>`,
-      to: env.to,
-      cc: env.cc.length ? env.cc : void 0,
-      bcc: env.bcc.length ? env.bcc : void 0,
-      reply_to: env.replyTo ? [env.replyTo] : void 0,
-      subject: env.subject,
-      html: env.html,
-      text: env.text,
-      headers: { ...env.headers, "Message-ID": env.messageId },
-      attachments: env.attachments.length ? env.attachments.map((a) => ({ filename: a.filename, content: a.content, content_type: a.contentType })) : void 0
-    }),
-    signal: AbortSignal.timeout(2e4)
-  });
-  const body = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    const msg = body.message || `HTTP ${res.status}`;
+  const payload = {
+    from: `"${env.fromName.replace(/["\\]/g, "")}" <${env.from}>`,
+    to: env.to,
+    cc: env.cc.length ? env.cc : void 0,
+    bcc: env.bcc.length ? env.bcc : void 0,
+    reply_to: env.replyTo ? [env.replyTo] : void 0,
+    subject: env.subject,
+    html: env.html,
+    text: env.text,
+    headers: { ...env.headers, "Message-ID": env.messageId },
+    attachments: env.attachments.length ? env.attachments.map((a) => ({ filename: a.filename, content: a.content, content_type: a.contentType })) : void 0
+  };
+  let lastError = "unknown error";
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (attempt) await sleep(attempt === 1 ? 800 : 2500);
+    let res;
+    try {
+      res = await resendApi("/emails", {
+        method: "POST",
+        headers: { "Idempotency-Key": env.messageId },
+        body: payload,
+        timeoutMs: 2e4
+      });
+    } catch (err) {
+      lastError = err.message;
+      continue;
+    }
+    if (res.ok) return { messageId: env.messageId, providerId: res.body.id };
+    const msg = res.body.message || `HTTP ${res.status}`;
+    if (res.status === 429 || res.status >= 500) {
+      lastError = msg;
+      continue;
+    }
     if (/not verified|verify a domain|domain.*verif/i.test(msg)) {
       throw new Error(`${msg} \u2014 verify ${env.from.split("@")[1]} at resend.com/domains and add its DKIM record in Route 53.`);
     }
     if (res.status === 401 || res.status === 403) throw new Error(`Resend rejected the API key (${msg}).`);
     throw new Error(msg);
   }
-  return env.messageId;
+  throw new Error(`Resend unavailable after 3 attempts: ${lastError}`);
 }
 async function sendEmailAction(params) {
   const attempts = [];
   try {
-    const toList = cleanEmailList(params.to);
-    const ccList = cleanEmailList(params.cc);
-    const bccList = cleanEmailList(params.bcc);
+    const to = parseEmailList(params.to);
+    const cc = parseEmailList(params.cc);
+    const bcc = parseEmailList(params.bcc);
+    const toList = to.valid;
+    const ccList = cc.valid.filter((a) => !toList.includes(a));
+    const bccList = bcc.valid.filter((a) => !toList.includes(a) && !ccList.includes(a));
+    const invalid = [...to.invalid, ...cc.invalid, ...bcc.invalid];
+    if (invalid.length) {
+      return { success: false, error: `Not a valid email address: ${invalid.map((x) => `"${x}"`).join(", ")}. Nothing was sent.` };
+    }
     if (!params.accountId || toList.length === 0 || !params.subject?.trim() || !params.htmlBody?.trim()) {
       return { success: false, error: "A sender, at least one valid recipient, a subject and a message are required." };
+    }
+    let recipientChecks;
+    if (!params.skipRecipientCheck && process.env.RECIPIENT_CHECK !== "off") {
+      recipientChecks = await checkRecipients([...toList, ...ccList, ...bccList], await knownDomains().catch(() => []));
+      const problem = describeProblems(recipientChecks);
+      if (problem) return { success: false, error: `Nothing was sent. ${problem}`, recipientChecks };
     }
     const [acc] = await db.select().from(accounts).where(or(eq(accounts.id, params.accountId), eq(accounts.email_address, params.accountId.toLowerCase()))).limit(1);
     const from = (acc?.email_address || params.accountId).trim().toLowerCase();
@@ -1572,6 +2006,7 @@ async function sendEmailAction(params) {
       html: params.htmlBody,
       text: htmlToText(params.htmlBody),
       messageId: `<${crypto2.randomUUID()}@${domain}>`,
+      replyTo: params.replyTo && EMAIL_RE.test(params.replyTo.trim()) ? params.replyTo.trim() : void 0,
       headers,
       attachments: params.attachments ?? []
     };
@@ -1579,10 +2014,13 @@ async function sendEmailAction(params) {
     const gmail = gmailPasswords();
     let provider = "";
     let messageId = "";
+    let providerId;
     const attempt = async (name, fn) => {
       if (provider) return;
       try {
-        messageId = await fn();
+        const out = await fn();
+        messageId = typeof out === "string" ? out : out.messageId;
+        providerId = typeof out === "string" ? void 0 : out.providerId;
         provider = name;
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -1595,7 +2033,7 @@ async function sendEmailAction(params) {
       if (gpass) await attempt("Gmail SMTP", () => viaSmtp(env, { host: "smtp.gmail.com", port: 465, user: from, pass: gpass }));
       else attempts.push({ provider: "Gmail SMTP", error: `No app password saved for ${from}` });
     } else {
-      if (process.env.RESEND_API_KEY?.trim()) await attempt("Resend", () => viaResend(env));
+      if (resendConfigured()) await attempt("Resend", () => viaResend(env));
       const own = mailboxSmtp(acc);
       if (own && pass) await attempt(`SMTP ${own.host}`, () => viaSmtp(env, { ...own, user: from, pass }));
       const relayHost = process.env.SMTP_HOST?.trim();
@@ -1626,6 +2064,8 @@ async function sendEmailAction(params) {
       const detail = attempts.length ? attempts.map((a) => `${a.provider}: ${a.error}`).join(" | ") : "No sending route is configured. Set RESEND_API_KEY (business domains) or save the mailbox password.";
       return { success: false, error: `Nothing was sent. ${detail}`, attempts };
     }
+    let emailId;
+    const trackable = provider === "Resend" && Boolean(providerId);
     try {
       const record = {
         id: messageId,
@@ -1644,17 +2084,25 @@ async function sendEmailAction(params) {
         recipients: [...toList, ...ccList].join(", "),
         direction: "outbound",
         folder: "Sent",
-        has_attachments: env.attachments.length > 0
+        has_attachments: env.attachments.length > 0,
+        transport: provider,
+        provider_message_id: providerId ?? null,
+        delivery_status: "sent",
+        delivery_updated_at: /* @__PURE__ */ new Date()
       };
-      if (acc) await storeEmail(record);
+      if (acc && await storeEmail(record)) emailId = record.id;
     } catch (dbErr) {
       console.warn("[send] sent, but could not log the copy:", dbErr);
     }
     return {
       success: true,
       messageId,
+      emailId,
+      deliveryStatus: "sent",
+      trackable,
       dispatchedAt: (/* @__PURE__ */ new Date()).toISOString(),
       provider,
+      recipientChecks,
       attempts: attempts.length ? attempts : void 0
     };
   } catch (err) {
@@ -1667,7 +2115,7 @@ async function sendEmailAction(params) {
 init_db();
 init_schema();
 init_gemini();
-import { eq as eq2, and, or as or2, ilike, gte, desc } from "drizzle-orm";
+import { eq as eq2, and, or as or2, ilike, gte, desc as desc2 } from "drizzle-orm";
 import { Type as Type2 } from "@google/genai";
 async function smartSearchAction(query, accountId) {
   try {
@@ -1687,7 +2135,7 @@ async function smartSearchAction(query, accountId) {
         is_read: emails.is_read,
         received_at: emails.received_at,
         account_email: accounts.email_address
-      }).from(emails).leftJoin(accounts, eq2(emails.account_id, accounts.id)).orderBy(desc(emails.received_at)).limit(50);
+      }).from(emails).leftJoin(accounts, eq2(emails.account_id, accounts.id)).orderBy(desc2(emails.received_at)).limit(50);
       return {
         success: true,
         emails: results.map((r) => ({
@@ -1819,7 +2267,7 @@ Extract the following fields:
       is_read: emails.is_read,
       received_at: emails.received_at,
       account_email: accounts.email_address
-    }).from(emails).leftJoin(accounts, eq2(emails.account_id, accounts.id)).orderBy(desc(emails.received_at)).limit(50);
+    }).from(emails).leftJoin(accounts, eq2(emails.account_id, accounts.id)).orderBy(desc2(emails.received_at)).limit(50);
     const rows = conditions.length > 0 ? await queryBuilder.where(and(...conditions)) : await queryBuilder;
     let finalRows = rows;
     if (finalRows.length === 0) {
@@ -1848,7 +2296,7 @@ Extract the following fields:
           is_read: emails.is_read,
           received_at: emails.received_at,
           account_email: accounts.email_address
-        }).from(emails).leftJoin(accounts, eq2(emails.account_id, accounts.id)).where(and(...relaxedConditions)).orderBy(desc(emails.received_at)).limit(30);
+        }).from(emails).leftJoin(accounts, eq2(emails.account_id, accounts.id)).where(and(...relaxedConditions)).orderBy(desc2(emails.received_at)).limit(30);
         if (relaxedRows.length > 0) {
           finalRows = relaxedRows;
         }
@@ -1879,7 +2327,7 @@ Extract the following fields:
           is_read: emails.is_read,
           received_at: emails.received_at,
           account_email: accounts.email_address
-        }).from(emails).leftJoin(accounts, eq2(emails.account_id, accounts.id)).where(or2(...wordFilters)).orderBy(desc(emails.received_at)).limit(30);
+        }).from(emails).leftJoin(accounts, eq2(emails.account_id, accounts.id)).where(or2(...wordFilters)).orderBy(desc2(emails.received_at)).limit(30);
         if (tokenRows.length > 0) {
           finalRows = tokenRows;
         }
@@ -1917,6 +2365,9 @@ async function batchUpdateEmailsAction(params) {
         action,
         error: "No email IDs provided for batch operation."
       };
+    }
+    if (emailIds.length > 1e3 || emailIds.some((id) => typeof id !== "string")) {
+      return { success: false, affectedCount: 0, action, error: "emailIds must be at most 1000 strings." };
     }
     if (action === "mark_read") {
       const result = await db.update(emails).set({ is_read: true }).where(inArray(emails.id, emailIds)).returning();
@@ -1964,7 +2415,7 @@ init_db();
 init_schema();
 import { Router } from "express";
 import crypto7 from "node:crypto";
-import { eq as eq8, and as and3, desc as desc2, gte as gte2, sql as sql2 } from "drizzle-orm";
+import { eq as eq9, and as and4, desc as desc4, gte as gte2, sql as sql3 } from "drizzle-orm";
 
 // src/lib/api-auth.ts
 init_db();
@@ -2126,9 +2577,9 @@ function sessionUser() {
   };
 }
 function signingKey() {
-  const base = process.env.APP_SECRET?.trim() || process.env.ADMIN_PASSWORD?.trim();
-  if (!base) throw new Error("ADMIN_PASSWORD is not configured");
-  return crypto4.createHash("sha256").update(`aethermail:session:${base}`).digest();
+  const base2 = process.env.APP_SECRET?.trim() || process.env.ADMIN_PASSWORD?.trim();
+  if (!base2) throw new Error("ADMIN_PASSWORD is not configured");
+  return crypto4.createHash("sha256").update(`aethermail:session:${base2}`).digest();
 }
 function safeEqual(a, b) {
   const ab = Buffer.from(a);
@@ -2317,18 +2768,11 @@ function buildDomainDnsRecords(domainName, dkimTxtValue) {
 }
 
 // src/lib/stalwart.ts
-import nodemailer2 from "nodemailer";
 function getStalwartConfig() {
-  const resendApiKey = process.env.RESEND_API_KEY || process.env.SMTP_PASS || "";
-  const explicitHost = process.env.SMTP_HOST || process.env.STALWART_SMTP_HOST;
   return {
     apiUrl: process.env.STALWART_API_URL || "http://localhost:8080",
     adminUser: process.env.STALWART_ADMIN_USER || "admin",
-    adminSecret: process.env.STALWART_ADMIN_SECRET ?? "",
-    smtpHost: explicitHost || "smtp.resend.com",
-    smtpPort: Number(process.env.SMTP_PORT) || 465,
-    smtpUser: process.env.SMTP_USER || "resend",
-    smtpPass: process.env.SMTP_PASS || resendApiKey
+    adminSecret: process.env.STALWART_ADMIN_SECRET ?? ""
   };
 }
 async function provisionStalwartDomain(domainName) {
@@ -2493,6 +2937,9 @@ async function setOrUpdateJarvisKey(customRawKey) {
   let keyHash;
   let id;
   if (customRawKey && customRawKey.trim()) {
+    if (customRawKey.trim().length < 32) {
+      throw new Error("A custom Jarvis key must be at least 32 characters. Leave it empty to generate one.");
+    }
     rawKey = customRawKey.trim();
     keyHash = hashAgentKey(rawKey);
     id = `ak_jrv_${Date.now()}`;
@@ -2534,21 +2981,22 @@ async function getJarvisKeyStatus() {
 // src/server/v1-router.ts
 init_contacts();
 var v1Router = Router();
+var VALID_CATEGORIES2 = ["urgent", "personal", "newsletter", "automated", "work", "financial", "spam"];
 v1Router.get("/emails", requireApiKey("read"), async (req, res) => {
   try {
     const { category, requires_alert, is_read, since, limit, accountId } = req.query;
     const conditions = [];
     if (accountId && typeof accountId === "string" && accountId !== "all") {
-      conditions.push(eq8(emails.account_id, accountId));
+      conditions.push(eq9(emails.account_id, accountId));
     }
     if (category && typeof category === "string" && category !== "all") {
-      conditions.push(eq8(emails.category, category));
+      conditions.push(eq9(emails.category, category));
     }
     if (requires_alert !== void 0) {
-      conditions.push(eq8(emails.requires_alert, requires_alert === "true" || requires_alert === "1"));
+      conditions.push(eq9(emails.requires_alert, requires_alert === "true" || requires_alert === "1"));
     }
     if (is_read !== void 0) {
-      conditions.push(eq8(emails.is_read, is_read === "true" || is_read === "1"));
+      conditions.push(eq9(emails.is_read, is_read === "true" || is_read === "1"));
     }
     if (since && typeof since === "string") {
       const sinceDate = new Date(isNaN(Number(since)) ? since : Number(since));
@@ -2571,8 +3019,8 @@ v1Router.get("/emails", requireApiKey("read"), async (req, res) => {
       is_read: emails.is_read,
       received_at: emails.received_at,
       account_email: accounts.email_address
-    }).from(emails).leftJoin(accounts, eq8(emails.account_id, accounts.id)).orderBy(desc2(emails.received_at)).limit(maxLimit);
-    const results = conditions.length > 0 ? await query.where(and3(...conditions)) : await query;
+    }).from(emails).leftJoin(accounts, eq9(emails.account_id, accounts.id)).orderBy(desc4(emails.received_at)).limit(maxLimit);
+    const results = conditions.length > 0 ? await query.where(and4(...conditions)) : await query;
     return res.json({
       success: true,
       count: results.length,
@@ -2606,7 +3054,7 @@ v1Router.get("/emails/:id", requireApiKey("read"), async (req, res) => {
       is_read: emails.is_read,
       received_at: emails.received_at,
       account_email: accounts.email_address
-    }).from(emails).leftJoin(accounts, eq8(emails.account_id, accounts.id)).where(eq8(emails.id, id)).limit(1);
+    }).from(emails).leftJoin(accounts, eq9(emails.account_id, accounts.id)).where(eq9(emails.id, id)).limit(1);
     if (results.length === 0) {
       return res.status(404).json({ success: false, error: `Email ${id} not found.` });
     }
@@ -2624,6 +3072,27 @@ v1Router.get("/emails/:id", requireApiKey("read"), async (req, res) => {
       success: false,
       error: error instanceof Error ? error.message : "Failed to fetch email"
     });
+  }
+});
+v1Router.get("/emails/:id/delivery", requireApiKey("read"), async (req, res) => {
+  try {
+    const { refreshDelivery: refreshDelivery2 } = await Promise.resolve().then(() => (init_delivery(), delivery_exports));
+    const row = await refreshDelivery2(req.params.id);
+    if (!row) return res.status(404).json({ success: false, error: `Email ${req.params.id} not found.` });
+    return res.json({
+      success: true,
+      data: {
+        id: row.id,
+        status: row.delivery_status,
+        detail: row.delivery_detail,
+        updated_at: row.delivery_updated_at ? row.delivery_updated_at.toISOString() : null,
+        transport: row.transport,
+        trackable: row.transport === "Resend" && Boolean(row.provider_message_id)
+      }
+    });
+  } catch (error) {
+    console.error("v1 GET /emails/:id/delivery error:", error);
+    return res.status(500).json({ success: false, error: error instanceof Error ? error.message : "Failed to read delivery state" });
   }
 });
 v1Router.get("/contacts", requireApiKey("read"), async (req, res) => {
@@ -2688,7 +3157,12 @@ v1Router.patch("/emails/:id", requireApiKey("write"), async (req, res) => {
     const { is_read, category, requires_alert } = req.body;
     const updates = {};
     if (typeof is_read === "boolean") updates.is_read = is_read;
-    if (typeof category === "string") updates.category = category;
+    if (typeof category === "string") {
+      if (!VALID_CATEGORIES2.includes(category)) {
+        return res.status(400).json({ success: false, error: `category must be one of: ${VALID_CATEGORIES2.join(", ")}.` });
+      }
+      updates.category = category;
+    }
     if (typeof requires_alert === "boolean") updates.requires_alert = requires_alert;
     if (Object.keys(updates).length === 0) {
       return res.status(400).json({
@@ -2696,7 +3170,7 @@ v1Router.patch("/emails/:id", requireApiKey("write"), async (req, res) => {
         error: "No valid update fields provided (is_read, category, requires_alert)."
       });
     }
-    const updated = await db.update(emails).set(updates).where(eq8(emails.id, id)).returning();
+    const updated = await db.update(emails).set(updates).where(eq9(emails.id, id)).returning();
     if (updated.length === 0) {
       return res.status(404).json({ success: false, error: `Email ${id} not found.` });
     }
@@ -2722,7 +3196,7 @@ v1Router.get("/keys", requireSessionOrApiKey("admin"), async (_req, res) => {
       scopes: api_keys.scopes,
       last_used_at: api_keys.last_used_at,
       created_at: api_keys.created_at
-    }).from(api_keys).orderBy(desc2(api_keys.created_at));
+    }).from(api_keys).orderBy(desc4(api_keys.created_at));
     return res.json({
       success: true,
       keys: keys.map((k) => ({
@@ -2781,7 +3255,7 @@ v1Router.post("/keys", requireSessionOrApiKey("admin"), async (req, res) => {
 v1Router.delete("/keys/:id", requireSessionOrApiKey("admin"), async (req, res) => {
   try {
     const { id } = req.params;
-    const deleted = await db.delete(api_keys).where(eq8(api_keys.id, id)).returning();
+    const deleted = await db.delete(api_keys).where(eq9(api_keys.id, id)).returning();
     if (deleted.length === 0) {
       return res.status(404).json({ success: false, error: "Key not found" });
     }
@@ -2800,12 +3274,12 @@ v1Router.delete("/keys/:id", requireSessionOrApiKey("admin"), async (req, res) =
 v1Router.get("/metrics", requireSessionOrApiKey("admin"), async (_req, res) => {
   try {
     const [totals] = await db.select({
-      total: sql2`count(*)::int`,
-      unread: sql2`count(*) filter (where ${emails.is_read} = false)::int`,
-      alerts: sql2`count(*) filter (where ${emails.requires_alert} = true)::int`
+      total: sql3`count(*)::int`,
+      unread: sql3`count(*) filter (where ${emails.is_read} = false)::int`,
+      alerts: sql3`count(*) filter (where ${emails.requires_alert} = true)::int`
     }).from(emails);
-    const byCategory = await db.select({ category: emails.category, n: sql2`count(*)::int` }).from(emails).groupBy(emails.category);
-    const [keyCount] = await db.select({ n: sql2`count(*)::int` }).from(api_keys);
+    const byCategory = await db.select({ category: emails.category, n: sql3`count(*)::int` }).from(emails).groupBy(emails.category);
+    const [keyCount] = await db.select({ n: sql3`count(*)::int` }).from(api_keys);
     const allAccs = await db.select({ sync_status: accounts.sync_status }).from(accounts);
     const categoryDistribution = {
       urgent: 0,
@@ -2851,7 +3325,7 @@ v1Router.post("/admin/domains", requireSessionOrApiKey("admin"), async (req, res
       });
     }
     const normalizedDomain = domain_name.trim().toLowerCase();
-    const existing = await db.select().from(domains).where(eq8(domains.domain_name, normalizedDomain)).limit(1);
+    const existing = await db.select().from(domains).where(eq9(domains.domain_name, normalizedDomain)).limit(1);
     if (existing.length > 0) {
       const existingDomain = existing[0];
       const dnsConfig2 = buildDomainDnsRecords(existingDomain.domain_name, existingDomain.dkim_public_key);
@@ -2904,7 +3378,7 @@ v1Router.post("/admin/domains", requireSessionOrApiKey("admin"), async (req, res
 });
 v1Router.get("/admin/domains", requireSessionOrApiKey("admin"), async (_req, res) => {
   try {
-    const allDomains = await db.select().from(domains).orderBy(desc2(domains.created_at));
+    const allDomains = await db.select().from(domains).orderBy(desc4(domains.created_at));
     const enriched = allDomains.map((d) => {
       const dnsConfig = buildDomainDnsRecords(d.domain_name, d.dkim_public_key);
       return {
@@ -2941,7 +3415,7 @@ v1Router.post("/admin/mailboxes", requireSessionOrApiKey("admin"), async (req, r
     const domainPart = email.split("@")[1];
     let targetDomainId = domain_id;
     if (!targetDomainId) {
-      const matched = await db.select().from(domains).where(eq8(domains.domain_name, domainPart)).limit(1);
+      const matched = await db.select().from(domains).where(eq9(domains.domain_name, domainPart)).limit(1);
       if (matched.length === 0) {
         return res.status(404).json({
           success: false,
@@ -2950,15 +3424,18 @@ v1Router.post("/admin/mailboxes", requireSessionOrApiKey("admin"), async (req, r
       }
       targetDomainId = matched[0].id;
     }
-    const existingMbx = await db.select().from(mailboxes).where(eq8(mailboxes.email_address, email)).limit(1);
+    const existingMbx = await db.select().from(mailboxes).where(eq9(mailboxes.email_address, email)).limit(1);
     if (existingMbx.length > 0) {
       return res.status(409).json({
         success: false,
         error: `Mailbox "${email}" already exists.`
       });
     }
+    if (typeof password !== "string" || password.length < 12) {
+      return res.status(400).json({ success: false, error: "password is required (at least 12 characters)." });
+    }
     const salt = crypto7.randomBytes(16).toString("hex");
-    const hash = crypto7.pbkdf2Sync(password || "AetherPass123!", salt, 1e4, 32, "sha256").toString("hex");
+    const hash = crypto7.pbkdf2Sync(password, salt, 1e4, 32, "sha256").toString("hex");
     const pwdHash = `${salt}:${hash}`;
     await provisionStalwartMailbox(email, pwdHash);
     const mailboxId = `mbx_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
@@ -3007,8 +3484,8 @@ v1Router.get("/admin/mailboxes", requireSessionOrApiKey("admin"), async (req, re
       email_address: mailboxes.email_address,
       is_active: mailboxes.is_active,
       created_at: mailboxes.created_at
-    }).from(mailboxes).leftJoin(domains, eq8(mailboxes.domain_id, domains.id)).orderBy(desc2(mailboxes.created_at));
-    const rows = domainId ? await query.where(eq8(mailboxes.domain_id, domainId)) : await query;
+    }).from(mailboxes).leftJoin(domains, eq9(mailboxes.domain_id, domains.id)).orderBy(desc4(mailboxes.created_at));
+    const rows = domainId ? await query.where(eq9(mailboxes.domain_id, domainId)) : await query;
     return res.json({
       success: true,
       count: rows.length,
@@ -3069,9 +3546,9 @@ v1Router.post("/agent/jarvis/test", requireSessionOrApiKey("admin"), async (_req
     if (!status.configured) {
       return res.status(400).json({ success: false, error: "Jarvis is not configured. Add or generate an API key first." });
     }
-    const unread = await db.select({ count: sql2`count(*)` }).from(emails).where(eq8(emails.is_read, false));
-    const total = await db.select({ count: sql2`count(*)` }).from(emails);
-    const totalAccounts = await db.select({ count: sql2`count(*)` }).from(accounts);
+    const unread = await db.select({ count: sql3`count(*)` }).from(emails).where(eq9(emails.is_read, false));
+    const total = await db.select({ count: sql3`count(*)` }).from(emails);
+    const totalAccounts = await db.select({ count: sql3`count(*)` }).from(accounts);
     return res.json({
       success: true,
       message: "Jarvis connection verified. Inboxes and triage feeds are fully accessible.",
@@ -3119,7 +3596,7 @@ v1Router.get("/agent/triage", requireAgentScope("read_all"), async (req, res) =>
     const since = req.query.since;
     const conditions = [];
     if (unreadOnly) {
-      conditions.push(eq8(emails.is_read, false));
+      conditions.push(eq9(emails.is_read, false));
     }
     if (since) {
       const sinceDate = new Date(isNaN(Number(since)) ? since : Number(since));
@@ -3140,9 +3617,16 @@ v1Router.get("/agent/triage", requireAgentScope("read_all"), async (req, res) =>
       ai_summary: emails.ai_summary,
       requires_alert: emails.requires_alert,
       is_read: emails.is_read,
-      received_at: emails.received_at
-    }).from(emails).leftJoin(accounts, eq8(emails.account_id, accounts.id)).orderBy(desc2(emails.received_at)).limit(limit);
-    const rows = conditions.length > 0 ? await query.where(and3(...conditions)) : await query;
+      received_at: emails.received_at,
+      // Who it was addressed to and which way it went: an agent answering
+      // mail written to it (you+jarvis@…) has to tell that apart from the
+      // rest of the mailbox, including mail the owner sent to other people.
+      message_id: emails.message_id,
+      recipients: emails.recipients,
+      direction: emails.direction,
+      folder: emails.folder
+    }).from(emails).leftJoin(accounts, eq9(emails.account_id, accounts.id)).orderBy(desc4(emails.received_at)).limit(limit);
+    const rows = conditions.length > 0 ? await query.where(and4(...conditions)) : await query;
     return res.json({
       success: true,
       agent: req.agent?.botName,
@@ -3167,8 +3651,13 @@ v1Router.patch("/agent/triage", requireAgentScope("read_all"), async (req, res) 
       return res.status(400).json({ success: false, error: "email_id is required." });
     }
     const updates = {};
-    if (category) updates.category = category;
-    if (ai_summary !== void 0) updates.ai_summary = ai_summary;
+    if (category) {
+      if (!VALID_CATEGORIES2.includes(category)) {
+        return res.status(400).json({ success: false, error: `category must be one of: ${VALID_CATEGORIES2.join(", ")}.` });
+      }
+      updates.category = category;
+    }
+    if (ai_summary !== void 0) updates.ai_summary = String(ai_summary).slice(0, 2e3);
     if (requires_alert !== void 0) updates.requires_alert = Boolean(requires_alert);
     if (is_read !== void 0) updates.is_read = Boolean(is_read);
     if (Object.keys(updates).length === 0) {
@@ -3177,7 +3666,7 @@ v1Router.patch("/agent/triage", requireAgentScope("read_all"), async (req, res) 
         error: "No valid triage fields provided (category, ai_summary, requires_alert, is_read)."
       });
     }
-    const updated = await db.update(emails).set(updates).where(eq8(emails.id, email_id)).returning();
+    const updated = await db.update(emails).set(updates).where(eq9(emails.id, email_id)).returning();
     if (updated.length === 0) {
       return res.status(404).json({ success: false, error: `Email "${email_id}" not found.` });
     }
@@ -3217,6 +3706,7 @@ v1Router.post("/agent/dispatch", requireAgentScope("send_as_any"), async (req, r
       subject,
       htmlBody,
       inReplyToId: typeof req.body.in_reply_to === "string" ? req.body.in_reply_to : void 0,
+      replyTo: typeof replyTo === "string" ? replyTo : void 0,
       fromName: "Jarvis"
     });
     if (!result.success) {
@@ -3228,6 +3718,9 @@ v1Router.post("/agent/dispatch", requireAgentScope("send_as_any"), async (req, r
       agent: req.agent?.botName,
       data: {
         message_id: result.messageId,
+        // Poll GET /api/v1/emails/:email_id/delivery for delivered / bounced.
+        email_id: result.emailId ?? null,
+        delivery_status: result.deliveryStatus ?? null,
         from: sender,
         to: Array.isArray(to) ? to.join(", ") : String(to),
         subject,
@@ -3287,6 +3780,7 @@ init_notify();
 init_business_mailboxes();
 var PORT = Number(process.env.PORT) || 3007;
 var IS_SERVERLESS = !!process.env.VERCEL;
+var MAX_BODY_BYTES = IS_SERVERLESS ? 44e5 : 15 * 1024 * 1024;
 var escapeHtml = (s) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 var asyncRoute = (fn) => (req, res, next) => fn(req, res).catch(next);
 function publicAccount(a) {
@@ -3312,7 +3806,7 @@ async function createApp() {
     if (req.query.deep !== "1") return res.json({ status: "ok", time: (/* @__PURE__ */ new Date()).toISOString() });
     try {
       await ensureSchema();
-      await db.execute(sql3`select 1`);
+      await db.execute(sql4`select 1`);
       res.json({ status: "ok", database: "ok", time: (/* @__PURE__ */ new Date()).toISOString() });
     } catch (err) {
       res.status(503).json({ status: "degraded", database: err.message, time: (/* @__PURE__ */ new Date()).toISOString() });
@@ -3370,7 +3864,7 @@ async function createApp() {
       }).then((r) => r.text()).catch(() => "ERROR");
       if (check.trim() !== "VALID") return res.status(400).send("ITN not confirmed by PayFast");
       const notifyAddr = process.env.PAYFAST_NOTIFY_EMAIL?.trim().toLowerCase();
-      const [target] = notifyAddr ? await db.select().from(accounts).where(eq10(accounts.email_address, notifyAddr)).limit(1) : await db.select().from(accounts).orderBy(accounts.created_at).limit(1);
+      const [target] = notifyAddr ? await db.select().from(accounts).where(eq11(accounts.email_address, notifyAddr)).limit(1) : await db.select().from(accounts).orderBy(accounts.created_at).limit(1);
       if (!target) return res.status(200).send("OK (no account to file under)");
       const status = payload.payment_status || "NOTIFICATION";
       const amount = payload.amount_gross ? `R${payload.amount_gross}` : "";
@@ -3404,7 +3898,7 @@ async function createApp() {
       if (!account_id || !subject || !sender || !full_body) {
         return res.status(400).json({ error: "account_id, subject, sender and full_body are required." });
       }
-      const [acc] = await db.select().from(accounts).where(eq10(accounts.id, account_id)).limit(1);
+      const [acc] = await db.select().from(accounts).where(eq11(accounts.id, account_id)).limit(1);
       if (!acc) return res.status(404).json({ error: `Unknown account_id "${account_id}".` });
       const ai = await processEmailWithGemini({ subject, sender, body: full_body });
       const emailId = id || `msg_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
@@ -3436,17 +3930,17 @@ async function createApp() {
       const accs = await db.select().from(accounts).orderBy(accounts.created_at);
       const perAccount = await db.select({
         account_id: emails.account_id,
-        total: sql3`count(*)::int`,
-        unread: sql3`count(*) filter (where ${emails.is_read} = false and ${emails.direction} = 'inbound' and ${emails.category} <> 'spam')::int`,
-        latest: sql3`max(${emails.received_at})`
+        total: sql4`count(*)::int`,
+        unread: sql4`count(*) filter (where ${emails.is_read} = false and ${emails.direction} = 'inbound' and ${emails.category} <> 'spam')::int`,
+        latest: sql4`max(${emails.received_at})`
       }).from(emails).groupBy(emails.account_id);
       const perCategory = await db.select({
         category: emails.category,
-        unread: sql3`count(*) filter (where ${emails.is_read} = false)::int`,
-        total: sql3`count(*)::int`
+        unread: sql4`count(*) filter (where ${emails.is_read} = false)::int`,
+        total: sql4`count(*)::int`
       }).from(emails).groupBy(emails.category);
-      const [alerts] = await db.select({ n: sql3`count(*)::int` }).from(emails).where(and4(eq10(emails.requires_alert, true), eq10(emails.is_read, false)));
-      const [newest] = await db.select({ id: emails.id, at: emails.received_at }).from(emails).orderBy(desc3(emails.received_at)).limit(1);
+      const [alerts] = await db.select({ n: sql4`count(*)::int` }).from(emails).where(and5(eq11(emails.requires_alert, true), eq11(emails.is_read, false)));
+      const [newest] = await db.select({ id: emails.id, at: emails.received_at }).from(emails).orderBy(desc5(emails.received_at)).limit(1);
       res.json({
         success: true,
         serverTime: (/* @__PURE__ */ new Date()).toISOString(),
@@ -3468,7 +3962,8 @@ async function createApp() {
           credentialVault: Boolean(process.env.APP_SECRET?.trim()),
           backgroundSync: !IS_SERVERLESS && process.env.BACKGROUND_SYNC !== "false",
           serverless: IS_SERVERLESS,
-          defaultSender: process.env.AETHERMAIL_SENDER?.trim() || null
+          defaultSender: process.env.AETHERMAIL_SENDER?.trim() || null,
+          maxBodyBytes: MAX_BODY_BYTES
         }
       });
     })
@@ -3520,7 +4015,7 @@ async function createApp() {
     "/api/accounts/:id",
     asyncRoute(async (req, res) => {
       const { display_name } = req.body ?? {};
-      const [updated] = await db.update(accounts).set({ display_name: typeof display_name === "string" ? display_name.trim() || null : void 0 }).where(eq10(accounts.id, req.params.id)).returning();
+      const [updated] = await db.update(accounts).set({ display_name: typeof display_name === "string" ? display_name.trim() || null : void 0 }).where(eq11(accounts.id, req.params.id)).returning();
       if (!updated) return res.status(404).json({ success: false, error: "Account not found" });
       res.json({ success: true, account: publicAccount(updated) });
     })
@@ -3528,14 +4023,14 @@ async function createApp() {
   app.delete(
     "/api/accounts/:id",
     asyncRoute(async (req, res) => {
-      const deleted = await db.delete(accounts).where(eq10(accounts.id, req.params.id)).returning({ id: accounts.id });
+      const deleted = await db.delete(accounts).where(eq11(accounts.id, req.params.id)).returning({ id: accounts.id });
       res.json({ success: deleted.length > 0 });
     })
   );
   app.post(
     "/api/accounts/:id/resync",
     asyncRoute(async (req, res) => {
-      const [acc] = await db.select().from(accounts).where(eq10(accounts.id, req.params.id)).limit(1);
+      const [acc] = await db.select().from(accounts).where(eq11(accounts.id, req.params.id)).limit(1);
       if (!acc) return res.status(404).json({ success: false, error: "Account not found" });
       await resetSyncState(acc.id);
       res.json(await syncOneAccount(acc, { force: true, deadline: Date.now() + 5e4 }));
@@ -3563,6 +4058,10 @@ async function createApp() {
     direction: emails.direction,
     folder: emails.folder,
     has_attachments: emails.has_attachments,
+    delivery_status: emails.delivery_status,
+    delivery_detail: emails.delivery_detail,
+    delivery_updated_at: emails.delivery_updated_at,
+    transport: emails.transport,
     account_email: accounts.email_address
   };
   app.get(
@@ -3571,21 +4070,21 @@ async function createApp() {
       const { accountId, category, alertOnly, search, unread, direction, before } = req.query;
       const limit = Math.min(Math.max(Number(req.query.limit) || 100, 1), 500);
       const conds = [];
-      if (accountId && accountId !== "all") conds.push(eq10(emails.account_id, accountId));
-      if (category === "sent") conds.push(eq10(emails.direction, "outbound"));
-      else if (category && category !== "all") conds.push(eq10(emails.category, category));
-      else if (!search) conds.push(sql3`${emails.category} <> 'spam'`);
-      if (alertOnly === "true") conds.push(eq10(emails.requires_alert, true));
-      if (unread === "true") conds.push(eq10(emails.is_read, false));
-      if (direction === "inbound" || direction === "outbound") conds.push(eq10(emails.direction, direction));
+      if (accountId && accountId !== "all") conds.push(eq11(emails.account_id, accountId));
+      if (category === "sent") conds.push(eq11(emails.direction, "outbound"));
+      else if (category && category !== "all") conds.push(eq11(emails.category, category));
+      else if (!search) conds.push(sql4`${emails.category} <> 'spam'`);
+      if (alertOnly === "true") conds.push(eq11(emails.requires_alert, true));
+      if (unread === "true") conds.push(eq11(emails.is_read, false));
+      if (direction === "inbound" || direction === "outbound") conds.push(eq11(emails.direction, direction));
       if (before) {
         const d = new Date(before);
-        if (!isNaN(d.getTime())) conds.push(lt(emails.received_at, d));
+        if (!isNaN(d.getTime())) conds.push(lt2(emails.received_at, d));
       }
       if (search?.trim()) {
         const q = `%${search.trim().replace(/[%_\\]/g, (c) => `\\${c}`)}%`;
         conds.push(
-          or3(
+          or4(
             ilike2(emails.subject, q),
             ilike2(emails.sender, q),
             ilike2(emails.body_snippet, q),
@@ -3594,14 +4093,14 @@ async function createApp() {
           )
         );
       }
-      const rows = await db.select(listColumns).from(emails).leftJoin(accounts, eq10(emails.account_id, accounts.id)).where(conds.length ? and4(...conds) : void 0).orderBy(desc3(emails.received_at)).limit(limit);
+      const rows = await db.select(listColumns).from(emails).leftJoin(accounts, eq11(emails.account_id, accounts.id)).where(conds.length ? and5(...conds) : void 0).orderBy(desc5(emails.received_at)).limit(limit);
       res.json(rows);
     })
   );
   app.get(
     "/api/emails/:id",
     asyncRoute(async (req, res) => {
-      const [row] = await db.select({ ...listColumns, full_body: emails.full_body, message_id: emails.message_id }).from(emails).leftJoin(accounts, eq10(emails.account_id, accounts.id)).where(eq10(emails.id, req.params.id)).limit(1);
+      const [row] = await db.select({ ...listColumns, full_body: emails.full_body, message_id: emails.message_id }).from(emails).leftJoin(accounts, eq11(emails.account_id, accounts.id)).where(eq11(emails.id, req.params.id)).limit(1);
       if (!row) return res.status(404).json({ error: "Email not found" });
       res.json(row);
     })
@@ -3609,14 +4108,30 @@ async function createApp() {
   app.get(
     "/api/threads/:threadId",
     asyncRoute(async (req, res) => {
-      const rows = await db.select({ ...listColumns, full_body: emails.full_body }).from(emails).leftJoin(accounts, eq10(emails.account_id, accounts.id)).where(eq10(emails.thread_id, req.params.threadId)).orderBy(emails.received_at).limit(50);
+      const rows = await db.select({ ...listColumns, full_body: emails.full_body }).from(emails).leftJoin(accounts, eq11(emails.account_id, accounts.id)).where(eq11(emails.thread_id, req.params.threadId)).orderBy(emails.received_at).limit(50);
       res.json(rows);
+    })
+  );
+  app.get(
+    "/api/emails/:id/delivery",
+    asyncRoute(async (req, res) => {
+      const { refreshDelivery: refreshDelivery2 } = await Promise.resolve().then(() => (init_delivery(), delivery_exports));
+      const row = await refreshDelivery2(String(req.params.id));
+      if (!row) return res.status(404).json({ error: "Email not found" });
+      res.json({
+        id: row.id,
+        status: row.delivery_status,
+        detail: row.delivery_detail,
+        updatedAt: row.delivery_updated_at,
+        transport: row.transport,
+        trackable: row.transport === "Resend" && Boolean(row.provider_message_id)
+      });
     })
   );
   app.patch(
     "/api/emails/:id/read",
     asyncRoute(async (req, res) => {
-      const [updated] = await db.update(emails).set({ is_read: Boolean(req.body?.is_read) }).where(eq10(emails.id, req.params.id)).returning({ id: emails.id, is_read: emails.is_read });
+      const [updated] = await db.update(emails).set({ is_read: Boolean(req.body?.is_read) }).where(eq11(emails.id, req.params.id)).returning({ id: emails.id, is_read: emails.is_read });
       if (!updated) return res.status(404).json({ error: "Email not found" });
       res.json(updated);
     })
@@ -3630,7 +4145,7 @@ async function createApp() {
       if (typeof category === "string" && valid.includes(category)) set.category = category;
       if (typeof requires_alert === "boolean") set.requires_alert = requires_alert;
       if (!Object.keys(set).length) return res.status(400).json({ error: "Nothing to update" });
-      const [updated] = await db.update(emails).set(set).where(eq10(emails.id, req.params.id)).returning({ id: emails.id });
+      const [updated] = await db.update(emails).set(set).where(eq11(emails.id, req.params.id)).returning({ id: emails.id });
       if (!updated) return res.status(404).json({ error: "Email not found" });
       res.json({ success: true, ...set });
     })
@@ -3638,7 +4153,7 @@ async function createApp() {
   app.delete(
     "/api/emails/:id",
     asyncRoute(async (req, res) => {
-      await db.delete(emails).where(eq10(emails.id, req.params.id));
+      await db.delete(emails).where(eq11(emails.id, req.params.id));
       res.json({ success: true });
     })
   );
@@ -3654,8 +4169,18 @@ async function createApp() {
     "/api/emails/mark-all-read",
     asyncRoute(async (req, res) => {
       const accountId = typeof req.body?.accountId === "string" && req.body.accountId !== "all" ? req.body.accountId : null;
-      const done = await db.update(emails).set({ is_read: true }).where(and4(eq10(emails.is_read, false), accountId ? eq10(emails.account_id, accountId) : void 0)).returning({ id: emails.id });
+      const done = await db.update(emails).set({ is_read: true }).where(and5(eq11(emails.is_read, false), accountId ? eq11(emails.account_id, accountId) : void 0)).returning({ id: emails.id });
       res.json({ success: true, updated: done.length });
+    })
+  );
+  app.post(
+    "/api/recipients/check",
+    asyncRoute(async (req, res) => {
+      const { checkRecipients: checkRecipients2 } = await Promise.resolve().then(() => (init_recipient_check(), recipient_check_exports));
+      const { knownDomains: knownDomains2 } = await Promise.resolve().then(() => (init_contacts(), contacts_exports));
+      const raw = req.body?.addresses;
+      const list = (Array.isArray(raw) ? raw : String(raw ?? "").split(/[,;\n]+/)).map((a) => String(a).trim()).map((a) => a.match(/<([^>]+)>/)?.[1]?.trim() ?? a).filter(Boolean).slice(0, 50);
+      res.json({ success: true, results: await checkRecipients2(list, await knownDomains2().catch(() => [])) });
     })
   );
   app.post(
@@ -3678,7 +4203,7 @@ async function createApp() {
     asyncRoute(async (req, res) => {
       const { emailId, tone, instructions } = req.body ?? {};
       if (!emailId) return res.status(400).json({ error: "emailId is required" });
-      const [email] = await db.select().from(emails).where(eq10(emails.id, emailId)).limit(1);
+      const [email] = await db.select().from(emails).where(eq11(emails.id, emailId)).limit(1);
       if (!email) return res.status(404).json({ error: "Email not found" });
       const draftReply = await generateSmartReplyWithGemini({
         subject: email.subject,

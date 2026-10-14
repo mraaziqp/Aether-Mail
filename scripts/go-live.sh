@@ -244,7 +244,8 @@ if ! $DRY && [[ -n "$DOMAIN_ID" ]]; then
       resend DELETE "/webhooks/$HOOK_ID" >/dev/null; HOOK_ID=""
     fi
     if [[ -z "$HOOK_ID" ]]; then
-      resend POST /webhooks "$(jq -nc --arg u "$HOOK_URL" '{endpoint:$u, events:["email.received"]}')" > "$WORK/hook.json"
+      # Inbound mail plus delivery events, so a bounce shows on the sent message within seconds.
+      resend POST /webhooks "$(jq -nc --arg u "$HOOK_URL" '{endpoint:$u, events:["email.received","email.sent","email.delivered","email.delivery_delayed","email.bounced","email.complained","email.failed"]}')" > "$WORK/hook.json"
       if [[ "$(rstatus)" =~ ^20 ]]; then
         WEBHOOK_SECRET=$(jq -r '.signing_secret // .secret // empty' "$WORK/hook.json")
         ok "webhook created → ${HOOK_URL}"
@@ -253,6 +254,8 @@ if ! $DRY && [[ -n "$DOMAIN_ID" ]]; then
       fi
     else
       ok "webhook already exists → ${HOOK_URL}"
+      jq -e --arg u "$HOOK_URL" '.data[]? | select(.endpoint==$u) | .events | index("email.bounced")' "$WORK/hooks.json" >/dev/null \
+        || warn "webhook is not subscribed to delivery events; add email.delivered / email.bounced / email.delivery_delayed in Resend → Webhooks (bounces are still picked up by polling)"
     fi
   else
     warn "webhook API unavailable (HTTP $(rstatus))."
