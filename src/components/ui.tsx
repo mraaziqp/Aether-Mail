@@ -25,6 +25,29 @@ export function CategoryBadge({ category }: { category: string }) {
   );
 }
 
+export function accountBadge(email?: string | null): { label: string; style: string } {
+  if (!email) return { label: 'Mail', style: 'bg-zinc-800 text-zinc-400 border-zinc-700/50' };
+  const em = email.toLowerCase();
+  if (em.includes('verifiedbizlink')) {
+    return { label: 'VerifiedBizLink', style: 'bg-teal-500/10 text-teal-300 border-teal-500/25' };
+  }
+  if (em.includes('arpcloudsolutions')) {
+    const role = em.split('@')[0];
+    const roleLabel = role === 'contact' ? 'Contact' : role === 'info' ? 'Info' : role === 'jarvis' ? 'NOC' : role === 'billing' ? 'Billing' : role === 'sales' ? 'Sales' : role;
+    return { label: `ARP Cloud (${roleLabel})`, style: 'bg-sky-500/10 text-sky-300 border-sky-500/25' };
+  }
+  if (em.includes('mraaziqp@gmail.com')) {
+    return { label: 'Personal', style: 'bg-amber-500/10 text-amber-300 border-amber-500/25' };
+  }
+  if (em.includes('backupe9@gmail.com')) {
+    return { label: 'Backup', style: 'bg-purple-500/10 text-purple-300 border-purple-500/25' };
+  }
+  if (em.includes('@gmail.com')) {
+    return { label: 'Gmail', style: 'bg-rose-500/10 text-rose-300 border-rose-500/25' };
+  }
+  return { label: email.split('@')[0] || 'Mail', style: 'bg-zinc-800 text-zinc-300 border-zinc-700/50' };
+}
+
 /** "Jane Doe <jane@x.com>" → { name: "Jane Doe", address: "jane@x.com" } */
 export function parseSender(raw: string): { name: string; address: string } {
   const m = raw.match(/^\s*"?([^"<]*?)"?\s*<([^>]+)>\s*$/);

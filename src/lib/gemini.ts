@@ -32,7 +32,10 @@ const VALID_CATEGORIES = new Set([
   'urgent', 'personal', 'newsletter', 'automated', 'work', 'financial',
 ]);
 
-async function classifyWithLocalModel(prompt: string): Promise<GeminiExtractionResult | null> {
+export async function callLocalLlm(
+  messages: Array<{ role: string; content: string }>,
+  options: { temperature?: number; maxTokens?: number; timeoutMs?: number } = {}
+): Promise<string | null> {
   if (!process.env.LOCAL_LLM_URL?.trim()) return null;
   const baseUrl = process.env.LOCAL_LLM_URL.trim().replace(/\/$/, '');
   const model = process.env.LOCAL_LLM_MODEL || 'llama3.1:8b';
@@ -43,32 +46,38 @@ async function classifyWithLocalModel(prompt: string): Promise<GeminiExtractionR
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model,
-        messages: [
-          {
-            role: 'system',
-            content:
-              'You classify email. Reply with ONLY a JSON object, no prose and no code fences: ' +
-              '{"category":"urgent|personal|newsletter|automated|work|financial",' +
-              '"summary":"one sentence","requires_alert":true|false}',
-          },
-          { role: 'user', content: prompt },
-        ],
-        temperature: 0.1,
-        max_tokens: 200,
+        messages,
+        temperature: options.temperature ?? 0.2,
+        max_tokens: options.maxTokens ?? 300,
       }),
-      // Local inference is slow and this runs during ingestion, so bound it.
-      signal: AbortSignal.timeout(Number(process.env.LOCAL_LLM_TIMEOUT_MS) || 30_000),
+      signal: AbortSignal.timeout(options.timeoutMs ?? (Number(process.env.LOCAL_LLM_TIMEOUT_MS) || 30_000)),
     });
 
     if (!res.ok) return null;
-
     const json = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
-    const raw = json.choices?.[0]?.message?.content ?? '';
+    return json.choices?.[0]?.message?.content?.trim() ?? null;
+  } catch {
+    return null;
+  }
+}
 
-    // Small models wrap JSON in prose or fences despite being told not to.
-    const match = raw.match(/\{[\s\S]*\}/);
-    if (!match) return null;
+async function classifyWithLocalModel(prompt: string): Promise<GeminiExtractionResult | null> {
+  const raw = await callLocalLlm([
+    {
+      role: 'system',
+      content:
+        'You classify email. Reply with ONLY a JSON object, no prose and no code fences: ' +
+        '{"category":"urgent|personal|newsletter|automated|work|financial",' +
+        '"summary":"one sentence","requires_alert":true|false}',
+    },
+    { role: 'user', content: prompt },
+  ], { temperature: 0.1, maxTokens: 200 });
 
+  if (!raw) return null;
+  const match = raw.match(/\{[\s\S]*\}/);
+  if (!match) return null;
+
+  try {
     const parsed = JSON.parse(match[0]) as Partial<GeminiExtractionResult>;
     if (typeof parsed.category !== 'string' || !VALID_CATEGORIES.has(parsed.category)) return null;
 
@@ -200,7 +209,6 @@ export async function generateSmartReplyWithGemini(params: {
   tone?: string;
   instructions?: string;
 }): Promise<string> {
-  const ai = getGeminiClient();
   const tone = params.tone || 'professional';
   const instructions = params.instructions ? `Custom user instruction: ${params.instructions}` : '';
 
@@ -220,6 +228,23 @@ Instructions:
 - Directly address all inquiries, questions, or action items raised in the original message.
 - Keep the formatting neat with proper greeting, paragraph breaks, and sign-off placeholder [Your Name].
 - Do not add meta-commentary, markdown backticks, or "Here is your draft:". Only output the clean email draft.`;
+
+  if (!process.env.GEMINI_API_KEY) {
+    const localDraft = await callLocalLlm([
+      {
+        role: 'system',
+        content:
+          'You are an expert executive email assistant drafting a smart email reply. Directly output the ready-to-send email reply. No pleasantries, no markdown fences, no "Here is your draft:". Only output the clean email draft.',
+      },
+      { role: 'user', content: prompt },
+    ], { temperature: 0.3, maxTokens: 400 });
+
+    if (localDraft) {
+      return localDraft.replace(/^Here is [^\n]+:\s*/i, '').trim();
+    }
+  }
+
+  const ai = getGeminiClient();
 
   try {
     const response = await ai.models.generateContent({

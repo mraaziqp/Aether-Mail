@@ -332,13 +332,20 @@ export async function sendEmailAction(params: SendEmailParams): Promise<SendEmai
       if (gpass) await attempt('Gmail SMTP', () => viaSmtp(env, { host: 'smtp.gmail.com', port: 465, user: from, pass: gpass }));
       else attempts.push({ provider: 'Gmail SMTP', error: `No app password saved for ${from}` });
     } else {
-      if (resendConfigured()) await attempt('Resend', () => viaResend(env));
-
       const own = mailboxSmtp(acc);
-      if (own && pass) await attempt(`SMTP ${own.host}`, () => viaSmtp(env, { ...own, user: from, pass }));
+      // 1. If the account has its own authenticated SMTP configured (e.g. GoDaddy Secureserver), use it directly
+      if (own && pass) {
+        await attempt(`SMTP ${own.host}`, () => viaSmtp(env, { ...own, user: from, pass }));
+      }
 
+      // 2. Resend API for business domain accounts or when own SMTP is absent/failed
+      if (resendConfigured() && !provider) {
+        await attempt('Resend', () => viaResend(env));
+      }
+
+      // 3. Generic SMTP relay fallback
       const relayHost = process.env.SMTP_HOST?.trim();
-      if (relayHost && !(relayHost === 'smtp.resend.com' && attempts.some((a) => a.provider === 'Resend'))) {
+      if (relayHost && !provider && !(relayHost === 'smtp.resend.com' && attempts.some((a) => a.provider === 'Resend'))) {
         await attempt(`SMTP relay ${relayHost}`, () =>
           viaSmtp(env, {
             host: relayHost,

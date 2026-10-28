@@ -2,10 +2,11 @@ import { Router, type Request, type Response } from 'express';
 import crypto from 'node:crypto';
 import { db } from '../db/index.ts';
 import { emails, accounts, api_keys, domains, mailboxes, agent_keys, type NewApiKey, type NewDomain, type NewMailbox, type NewAccount, type NewEmail } from '../db/schema.ts';
-import { eq, and, desc, gte, sql } from 'drizzle-orm';
+import { eq, and, desc, gte, sql, or, ilike, inArray } from 'drizzle-orm';
 import { requireApiKey, generateNewApiKey } from '../lib/api-auth.ts';
 import { requireSessionOrApiKey } from './auth.ts';
 import { sendEmailAction } from '../app/actions/send-email.ts';
+import { batchUpdateEmailsAction } from '../app/actions/batch-emails.ts';
 import { generateDkimKeyPair, buildDomainDnsRecords } from '../lib/dkim.ts';
 import { provisionStalwartDomain, provisionStalwartMailbox } from '../lib/stalwart.ts';
 import { requireAgentScope, ensureJarvisRootKey, generateAgentKey, setOrUpdateJarvisKey, getJarvisKeyStatus } from '../lib/agent-auth.ts';
@@ -18,11 +19,11 @@ const VALID_CATEGORIES = ['urgent', 'personal', 'newsletter', 'automated', 'work
 /**
  * GET /api/v1/emails
  * Root Programmatic Endpoint for External Bots and Agents to query emails
- * Supported query params: category, requires_alert, is_read, since, limit, accountId
+ * Supported query params: category, requires_alert, is_read, since, limit, accountId, q, search, folder, direction
  */
 v1Router.get('/emails', requireApiKey('read'), async (req: Request, res: Response) => {
   try {
-    const { category, requires_alert, is_read, since, limit, accountId } = req.query;
+    const { category, requires_alert, is_read, since, limit, accountId, q, search, folder, direction } = req.query;
 
     const conditions = [];
 
@@ -32,6 +33,14 @@ v1Router.get('/emails', requireApiKey('read'), async (req: Request, res: Respons
 
     if (category && typeof category === 'string' && category !== 'all') {
       conditions.push(eq(emails.category, category));
+    }
+
+    if (folder && typeof folder === 'string') {
+      conditions.push(eq(emails.folder, folder));
+    }
+
+    if (direction && (direction === 'inbound' || direction === 'outbound')) {
+      conditions.push(eq(emails.direction, direction));
     }
 
     if (requires_alert !== undefined) {
@@ -47,6 +56,20 @@ v1Router.get('/emails', requireApiKey('read'), async (req: Request, res: Respons
       if (!isNaN(sinceDate.getTime())) {
         conditions.push(gte(emails.received_at, sinceDate));
       }
+    }
+
+    const searchQuery = typeof search === 'string' && search.trim() ? search.trim() : typeof q === 'string' && q.trim() ? q.trim() : null;
+    if (searchQuery) {
+      const pattern = `%${searchQuery.replace(/[%_\\]/g, (c) => `\\${c}`)}%`;
+      conditions.push(
+        or(
+          ilike(emails.subject, pattern),
+          ilike(emails.sender, pattern),
+          ilike(emails.body_snippet, pattern),
+          ilike(emails.ai_summary, pattern),
+          ilike(emails.recipients, pattern)
+        )!
+      );
     }
 
     const maxLimit = Math.min(Math.max(Number(limit) || 50, 1), 200);
@@ -241,13 +264,13 @@ v1Router.post('/emails/send', requireApiKey('send'), async (req: Request, res: R
 
 /**
  * PATCH /api/v1/emails/:id
- * Programmatic triage for external bots (mark read, change category, toggle alerts)
+ * Programmatic triage for external bots (mark read, change category, toggle alerts, update summary, move folder)
  * (Wildcard parameter to support RFC Message-IDs containing slashes)
  */
 v1Router.patch('/emails/:id(*)', requireApiKey('write'), async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const { is_read, category, requires_alert } = req.body;
+    const { is_read, category, requires_alert, ai_summary, folder } = req.body;
 
     const updates: Record<string, any> = {};
     if (typeof is_read === 'boolean') updates.is_read = is_read;
@@ -258,11 +281,13 @@ v1Router.patch('/emails/:id(*)', requireApiKey('write'), async (req: Request, re
       updates.category = category;
     }
     if (typeof requires_alert === 'boolean') updates.requires_alert = requires_alert;
+    if (typeof ai_summary === 'string') updates.ai_summary = ai_summary.slice(0, 2000);
+    if (typeof folder === 'string') updates.folder = folder.slice(0, 100);
 
     if (Object.keys(updates).length === 0) {
       return res.status(400).json({
         success: false,
-        error: 'No valid update fields provided (is_read, category, requires_alert).',
+        error: 'No valid update fields provided (is_read, category, requires_alert, ai_summary, folder).',
       });
     }
 
@@ -286,6 +311,27 @@ v1Router.patch('/emails/:id(*)', requireApiKey('write'), async (req: Request, re
     return res.status(500).json({
       success: false,
       error: error instanceof Error ? error.message : 'Failed to update email',
+    });
+  }
+});
+
+/**
+ * POST /api/v1/emails/batch
+ * Bulk operations across multiple emails (mark_read, mark_unread, archive, delete)
+ */
+v1Router.post('/emails/batch', requireApiKey('write'), async (req: Request, res: Response) => {
+  try {
+    const { emailIds, action } = req.body ?? {};
+    const result = await batchUpdateEmailsAction({ emailIds, action });
+    if (!result.success) {
+      return res.status(400).json(result);
+    }
+    return res.json(result);
+  } catch (error) {
+    console.error('v1 POST /emails/batch error:', error);
+    return res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Batch operation failed',
     });
   }
 });
@@ -909,7 +955,7 @@ v1Router.get('/agent/triage', requireAgentScope('read_all'), async (req: Request
  */
 v1Router.patch('/agent/triage', requireAgentScope('read_all'), async (req: Request, res: Response) => {
   try {
-    const { email_id, category, ai_summary, requires_alert, is_read } = req.body;
+    const { email_id, category, ai_summary, requires_alert, is_read, folder } = req.body;
 
     if (!email_id) {
       return res.status(400).json({ success: false, error: 'email_id is required.' });
@@ -925,11 +971,12 @@ v1Router.patch('/agent/triage', requireAgentScope('read_all'), async (req: Reque
     if (ai_summary !== undefined) updates.ai_summary = String(ai_summary).slice(0, 2000);
     if (requires_alert !== undefined) updates.requires_alert = Boolean(requires_alert);
     if (is_read !== undefined) updates.is_read = Boolean(is_read);
+    if (folder !== undefined) updates.folder = String(folder).slice(0, 100);
 
     if (Object.keys(updates).length === 0) {
       return res.status(400).json({
         success: false,
-        error: 'No valid triage fields provided (category, ai_summary, requires_alert, is_read).',
+        error: 'No valid triage fields provided (category, ai_summary, requires_alert, is_read, folder).',
       });
     }
 

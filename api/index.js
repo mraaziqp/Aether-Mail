@@ -261,6 +261,15 @@ var init_business_mailboxes = __esm({
 });
 
 // src/lib/gemini.ts
+var gemini_exports = {};
+__export(gemini_exports, {
+  callLocalLlm: () => callLocalLlm,
+  classifyWithAi: () => classifyWithAi,
+  generateSmartReplyWithGemini: () => generateSmartReplyWithGemini,
+  getGeminiClient: () => getGeminiClient,
+  isAiConfigured: () => isAiConfigured,
+  processEmailWithGemini: () => processEmailWithGemini
+});
 import { GoogleGenAI, Type } from "@google/genai";
 function isAiConfigured() {
   return Boolean(process.env.GEMINI_API_KEY?.trim() || process.env.LOCAL_LLM_URL?.trim());
@@ -272,7 +281,7 @@ function getGeminiClient() {
   }
   return aiClient;
 }
-async function classifyWithLocalModel(prompt) {
+async function callLocalLlm(messages, options = {}) {
   if (!process.env.LOCAL_LLM_URL?.trim()) return null;
   const baseUrl = process.env.LOCAL_LLM_URL.trim().replace(/\/$/, "");
   const model = process.env.LOCAL_LLM_MODEL || "llama3.1:8b";
@@ -282,24 +291,31 @@ async function classifyWithLocalModel(prompt) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         model,
-        messages: [
-          {
-            role: "system",
-            content: 'You classify email. Reply with ONLY a JSON object, no prose and no code fences: {"category":"urgent|personal|newsletter|automated|work|financial","summary":"one sentence","requires_alert":true|false}'
-          },
-          { role: "user", content: prompt }
-        ],
-        temperature: 0.1,
-        max_tokens: 200
+        messages,
+        temperature: options.temperature ?? 0.2,
+        max_tokens: options.maxTokens ?? 300
       }),
-      // Local inference is slow and this runs during ingestion, so bound it.
-      signal: AbortSignal.timeout(Number(process.env.LOCAL_LLM_TIMEOUT_MS) || 3e4)
+      signal: AbortSignal.timeout(options.timeoutMs ?? (Number(process.env.LOCAL_LLM_TIMEOUT_MS) || 3e4))
     });
     if (!res.ok) return null;
     const json = await res.json();
-    const raw = json.choices?.[0]?.message?.content ?? "";
-    const match = raw.match(/\{[\s\S]*\}/);
-    if (!match) return null;
+    return json.choices?.[0]?.message?.content?.trim() ?? null;
+  } catch {
+    return null;
+  }
+}
+async function classifyWithLocalModel(prompt) {
+  const raw = await callLocalLlm([
+    {
+      role: "system",
+      content: 'You classify email. Reply with ONLY a JSON object, no prose and no code fences: {"category":"urgent|personal|newsletter|automated|work|financial","summary":"one sentence","requires_alert":true|false}'
+    },
+    { role: "user", content: prompt }
+  ], { temperature: 0.1, maxTokens: 200 });
+  if (!raw) return null;
+  const match = raw.match(/\{[\s\S]*\}/);
+  if (!match) return null;
+  try {
     const parsed = JSON.parse(match[0]);
     if (typeof parsed.category !== "string" || !VALID_CATEGORIES.has(parsed.category)) return null;
     return {
@@ -393,7 +409,6 @@ function keywordFallback(params) {
   }
 }
 async function generateSmartReplyWithGemini(params) {
-  const ai = getGeminiClient();
   const tone = params.tone || "professional";
   const instructions = params.instructions ? `Custom user instruction: ${params.instructions}` : "";
   const prompt = `You are an expert executive email assistant drafting a smart email reply.
@@ -412,6 +427,19 @@ Instructions:
 - Directly address all inquiries, questions, or action items raised in the original message.
 - Keep the formatting neat with proper greeting, paragraph breaks, and sign-off placeholder [Your Name].
 - Do not add meta-commentary, markdown backticks, or "Here is your draft:". Only output the clean email draft.`;
+  if (!process.env.GEMINI_API_KEY) {
+    const localDraft = await callLocalLlm([
+      {
+        role: "system",
+        content: 'You are an expert executive email assistant drafting a smart email reply. Directly output the ready-to-send email reply. No pleasantries, no markdown fences, no "Here is your draft:". Only output the clean email draft.'
+      },
+      { role: "user", content: prompt }
+    ], { temperature: 0.3, maxTokens: 400 });
+    if (localDraft) {
+      return localDraft.replace(/^Here is [^\n]+:\s*/i, "").trim();
+    }
+  }
+  const ai = getGeminiClient();
   try {
     const response = await ai.models.generateContent({
       model: "gemini-2.5-flash",
@@ -1704,7 +1732,7 @@ var init_resend_inbound = __esm({
 init_db();
 import express from "express";
 import path from "path";
-import { and as and5, desc as desc5, eq as eq11, ilike as ilike2, lt as lt2, or as or4, sql as sql4 } from "drizzle-orm";
+import { and as and5, desc as desc5, eq as eq11, ilike as ilike3, lt as lt2, or as or5, sql as sql4 } from "drizzle-orm";
 
 // src/db/ensure-schema.ts
 init_db();
@@ -2033,11 +2061,15 @@ async function sendEmailAction(params) {
       if (gpass) await attempt("Gmail SMTP", () => viaSmtp(env, { host: "smtp.gmail.com", port: 465, user: from, pass: gpass }));
       else attempts.push({ provider: "Gmail SMTP", error: `No app password saved for ${from}` });
     } else {
-      if (resendConfigured()) await attempt("Resend", () => viaResend(env));
       const own = mailboxSmtp(acc);
-      if (own && pass) await attempt(`SMTP ${own.host}`, () => viaSmtp(env, { ...own, user: from, pass }));
+      if (own && pass) {
+        await attempt(`SMTP ${own.host}`, () => viaSmtp(env, { ...own, user: from, pass }));
+      }
+      if (resendConfigured() && !provider) {
+        await attempt("Resend", () => viaResend(env));
+      }
       const relayHost = process.env.SMTP_HOST?.trim();
-      if (relayHost && !(relayHost === "smtp.resend.com" && attempts.some((a) => a.provider === "Resend"))) {
+      if (relayHost && !provider && !(relayHost === "smtp.resend.com" && attempts.some((a) => a.provider === "Resend"))) {
         await attempt(
           `SMTP relay ${relayHost}`,
           () => viaSmtp(env, {
@@ -2144,10 +2176,17 @@ async function smartSearchAction(query, accountId) {
         }))
       };
     }
-    const ai = getGeminiClient();
+    let parsedIntent = {
+      category: null,
+      requires_alert: null,
+      keywords: [trimmedQuery],
+      sender: null,
+      days_ago: null,
+      intent_explanation: `Searching for "${trimmedQuery}"`
+    };
     const prompt = `You are an expert search parser for an email intelligence system.
 Parse the user's natural language search query into structured search filters.
-The current date is September 16, 2026.
+The current date is October 28, 2026.
 
 User Query: "${trimmedQuery}"
 
@@ -2158,71 +2197,93 @@ Extract the following fields:
 - "sender": name or email domain of sender if specified, otherwise null.
 - "days_ago": number of days back if query mentions relative time (e.g. "yesterday" = 2, "past week" = 7, "today" = 1), otherwise null.
 - "intent_explanation": 1 concise sentence explaining what you understood.`;
-    let parsedIntent = {
-      category: null,
-      requires_alert: null,
-      keywords: [trimmedQuery],
-      sender: null,
-      days_ago: null,
-      intent_explanation: `Searching for "${trimmedQuery}"`
-    };
-    try {
-      const response = await ai.models.generateContent({
-        model: "gemini-2.5-flash",
-        contents: prompt,
-        config: {
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type2.OBJECT,
-            properties: {
-              category: {
-                type: Type2.STRING,
-                enum: ["urgent", "personal", "newsletter", "automated", "work", "financial", "null"]
-              },
-              requires_alert: {
-                type: Type2.BOOLEAN,
-                nullable: true
-              },
-              keywords: {
-                type: Type2.ARRAY,
-                items: { type: Type2.STRING }
-              },
-              sender: {
-                type: Type2.STRING,
-                nullable: true
-              },
-              days_ago: {
-                type: Type2.INTEGER,
-                nullable: true
-              },
-              intent_explanation: {
-                type: Type2.STRING
-              }
-            },
-            required: ["intent_explanation"]
+    if (!process.env.GEMINI_API_KEY) {
+      try {
+        const { callLocalLlm: callLocalLlm2 } = await Promise.resolve().then(() => (init_gemini(), gemini_exports));
+        const rawJson = await callLocalLlm2([
+          {
+            role: "system",
+            content: 'You are an email search intent parser. Reply with ONLY a JSON object: {"category":string|null,"requires_alert":boolean|null,"keywords":string[],"sender":string|null,"days_ago":number|null,"intent_explanation":string}. No fences or commentary.'
+          },
+          { role: "user", content: prompt }
+        ], { temperature: 0.1, maxTokens: 200 });
+        if (rawJson) {
+          const match = rawJson.match(/\{[\s\S]*\}/);
+          if (match) {
+            const raw = JSON.parse(match[0]);
+            parsedIntent = {
+              category: ["urgent", "personal", "newsletter", "automated", "work", "financial"].includes(raw.category) ? raw.category : null,
+              requires_alert: typeof raw.requires_alert === "boolean" ? raw.requires_alert : null,
+              keywords: Array.isArray(raw.keywords) && raw.keywords.length > 0 ? raw.keywords : [trimmedQuery],
+              sender: typeof raw.sender === "string" && raw.sender.trim() ? raw.sender.trim() : null,
+              days_ago: typeof raw.days_ago === "number" && raw.days_ago > 0 ? raw.days_ago : null,
+              intent_explanation: raw.intent_explanation || `Searching for "${trimmedQuery}"`
+            };
           }
         }
-      });
-      const responseText = response.text;
-      if (responseText) {
-        const rawJson = JSON.parse(responseText);
-        parsedIntent = {
-          category: rawJson.category === "null" || !rawJson.category ? null : rawJson.category,
-          requires_alert: typeof rawJson.requires_alert === "boolean" ? rawJson.requires_alert : null,
-          keywords: Array.isArray(rawJson.keywords) && rawJson.keywords.length > 0 ? rawJson.keywords : [trimmedQuery],
-          sender: rawJson.sender || null,
-          days_ago: typeof rawJson.days_ago === "number" ? rawJson.days_ago : null,
-          intent_explanation: rawJson.intent_explanation || `Searching for ${trimmedQuery}`
-        };
+      } catch (localErr) {
+        console.warn("Local LLM intent extraction fallback:", localErr);
       }
-    } catch (parseErr) {
-      console.warn("Gemini intent extraction fallback:", parseErr);
-      const lower = trimmedQuery.toLowerCase();
-      if (lower.includes("urgent") || lower.includes("alert")) {
-        parsedIntent.requires_alert = true;
-      }
-      if (lower.includes("financial") || lower.includes("invoice")) {
-        parsedIntent.category = "financial";
+    } else {
+      const ai = getGeminiClient();
+      try {
+        const response = await ai.models.generateContent({
+          model: "gemini-2.5-flash",
+          contents: prompt,
+          config: {
+            responseMimeType: "application/json",
+            responseSchema: {
+              type: Type2.OBJECT,
+              properties: {
+                category: {
+                  type: Type2.STRING,
+                  enum: ["urgent", "personal", "newsletter", "automated", "work", "financial", "null"]
+                },
+                requires_alert: {
+                  type: Type2.BOOLEAN,
+                  nullable: true
+                },
+                keywords: {
+                  type: Type2.ARRAY,
+                  items: { type: Type2.STRING }
+                },
+                sender: {
+                  type: Type2.STRING,
+                  nullable: true
+                },
+                days_ago: {
+                  type: Type2.INTEGER,
+                  nullable: true
+                },
+                intent_explanation: {
+                  type: Type2.STRING
+                }
+              },
+              required: ["intent_explanation"]
+            }
+          }
+        });
+        const responseText = response.text;
+        if (responseText) {
+          const rawJson = JSON.parse(responseText);
+          parsedIntent = {
+            category: rawJson.category === "null" || !rawJson.category ? null : rawJson.category,
+            requires_alert: typeof rawJson.requires_alert === "boolean" ? rawJson.requires_alert : null,
+            keywords: Array.isArray(rawJson.keywords) && rawJson.keywords.length > 0 ? rawJson.keywords : [trimmedQuery],
+            sender: rawJson.sender || null,
+            days_ago: typeof rawJson.days_ago === "number" ? rawJson.days_ago : null,
+            intent_explanation: rawJson.intent_explanation || `Searching for ${trimmedQuery}`
+          };
+        }
+      } catch (parseErr) {
+        console.warn("Gemini intent extraction fallback:", parseErr);
+        const lower = trimmedQuery.toLowerCase();
+        if (lower.includes("urgent") || lower.includes("alert")) {
+          parsedIntent.requires_alert = true;
+        }
+        if (lower.includes("financial") || lower.includes("invoice")) {
+          parsedIntent.category = "financial";
+        }
       }
     }
     const conditions = [];
@@ -2385,6 +2446,14 @@ async function batchUpdateEmailsAction(params) {
         action: "mark_unread"
       };
     }
+    if (action === "archive") {
+      const result = await db.update(emails).set({ folder: "Archive" }).where(inArray(emails.id, emailIds)).returning();
+      return {
+        success: true,
+        affectedCount: result.length,
+        action: "archive"
+      };
+    }
     if (action === "delete") {
       const result = await db.delete(emails).where(inArray(emails.id, emailIds)).returning();
       return {
@@ -2415,7 +2484,7 @@ init_db();
 init_schema();
 import { Router } from "express";
 import crypto7 from "node:crypto";
-import { eq as eq9, and as and4, desc as desc4, gte as gte2, sql as sql3 } from "drizzle-orm";
+import { eq as eq9, and as and4, desc as desc4, gte as gte2, sql as sql3, or as or4, ilike as ilike2 } from "drizzle-orm";
 
 // src/lib/api-auth.ts
 init_db();
@@ -2912,7 +2981,26 @@ function requireAgentScope(requiredScope) {
   };
 }
 async function ensureJarvisRootKey() {
+  const envKey = process.env.JARVIS_AGENT_KEY?.trim();
   const existing = await db.select().from(agent_keys).where(eq4(agent_keys.bot_name, "Jarvis")).limit(1);
+  if (envKey) {
+    const envHash = hashAgentKey(envKey);
+    if (existing.length > 0 && existing[0].key_hash === envHash) {
+      return { rawKey: envKey, keyInfo: existing[0] };
+    }
+    if (existing.length > 0) {
+      const [updated] = await db.update(agent_keys).set({ key_hash: envHash, scopes: ["super_admin", "read_all", "send_as_any"] }).where(eq4(agent_keys.id, existing[0].id)).returning();
+      return { rawKey: envKey, keyInfo: updated };
+    }
+    const [inserted2] = await db.insert(agent_keys).values({
+      id: "ak_jarvis_master_root",
+      bot_name: "Jarvis",
+      key_hash: envHash,
+      scopes: ["super_admin", "read_all", "send_as_any"],
+      created_at: /* @__PURE__ */ new Date()
+    }).returning();
+    return { rawKey: envKey, keyInfo: inserted2 };
+  }
   if (existing.length > 0) {
     return { keyInfo: existing[0] };
   }
@@ -2984,13 +3072,19 @@ var v1Router = Router();
 var VALID_CATEGORIES2 = ["urgent", "personal", "newsletter", "automated", "work", "financial", "spam"];
 v1Router.get("/emails", requireApiKey("read"), async (req, res) => {
   try {
-    const { category, requires_alert, is_read, since, limit, accountId } = req.query;
+    const { category, requires_alert, is_read, since, limit, accountId, q, search, folder, direction } = req.query;
     const conditions = [];
     if (accountId && typeof accountId === "string" && accountId !== "all") {
       conditions.push(eq9(emails.account_id, accountId));
     }
     if (category && typeof category === "string" && category !== "all") {
       conditions.push(eq9(emails.category, category));
+    }
+    if (folder && typeof folder === "string") {
+      conditions.push(eq9(emails.folder, folder));
+    }
+    if (direction && (direction === "inbound" || direction === "outbound")) {
+      conditions.push(eq9(emails.direction, direction));
     }
     if (requires_alert !== void 0) {
       conditions.push(eq9(emails.requires_alert, requires_alert === "true" || requires_alert === "1"));
@@ -3003,6 +3097,19 @@ v1Router.get("/emails", requireApiKey("read"), async (req, res) => {
       if (!isNaN(sinceDate.getTime())) {
         conditions.push(gte2(emails.received_at, sinceDate));
       }
+    }
+    const searchQuery = typeof search === "string" && search.trim() ? search.trim() : typeof q === "string" && q.trim() ? q.trim() : null;
+    if (searchQuery) {
+      const pattern = `%${searchQuery.replace(/[%_\\]/g, (c) => `\\${c}`)}%`;
+      conditions.push(
+        or4(
+          ilike2(emails.subject, pattern),
+          ilike2(emails.sender, pattern),
+          ilike2(emails.body_snippet, pattern),
+          ilike2(emails.ai_summary, pattern),
+          ilike2(emails.recipients, pattern)
+        )
+      );
     }
     const maxLimit = Math.min(Math.max(Number(limit) || 50, 1), 200);
     const query = db.select({
@@ -3154,7 +3261,7 @@ v1Router.post("/emails/send", requireApiKey("send"), async (req, res) => {
 v1Router.patch("/emails/:id(*)", requireApiKey("write"), async (req, res) => {
   try {
     const { id } = req.params;
-    const { is_read, category, requires_alert } = req.body;
+    const { is_read, category, requires_alert, ai_summary, folder } = req.body;
     const updates = {};
     if (typeof is_read === "boolean") updates.is_read = is_read;
     if (typeof category === "string") {
@@ -3164,10 +3271,12 @@ v1Router.patch("/emails/:id(*)", requireApiKey("write"), async (req, res) => {
       updates.category = category;
     }
     if (typeof requires_alert === "boolean") updates.requires_alert = requires_alert;
+    if (typeof ai_summary === "string") updates.ai_summary = ai_summary.slice(0, 2e3);
+    if (typeof folder === "string") updates.folder = folder.slice(0, 100);
     if (Object.keys(updates).length === 0) {
       return res.status(400).json({
         success: false,
-        error: "No valid update fields provided (is_read, category, requires_alert)."
+        error: "No valid update fields provided (is_read, category, requires_alert, ai_summary, folder)."
       });
     }
     const updated = await db.update(emails).set(updates).where(eq9(emails.id, id)).returning();
@@ -3184,6 +3293,22 @@ v1Router.patch("/emails/:id(*)", requireApiKey("write"), async (req, res) => {
     return res.status(500).json({
       success: false,
       error: error instanceof Error ? error.message : "Failed to update email"
+    });
+  }
+});
+v1Router.post("/emails/batch", requireApiKey("write"), async (req, res) => {
+  try {
+    const { emailIds, action } = req.body ?? {};
+    const result = await batchUpdateEmailsAction({ emailIds, action });
+    if (!result.success) {
+      return res.status(400).json(result);
+    }
+    return res.json(result);
+  } catch (error) {
+    console.error("v1 POST /emails/batch error:", error);
+    return res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : "Batch operation failed"
     });
   }
 });
@@ -3646,7 +3771,7 @@ v1Router.get("/agent/triage", requireAgentScope("read_all"), async (req, res) =>
 });
 v1Router.patch("/agent/triage", requireAgentScope("read_all"), async (req, res) => {
   try {
-    const { email_id, category, ai_summary, requires_alert, is_read } = req.body;
+    const { email_id, category, ai_summary, requires_alert, is_read, folder } = req.body;
     if (!email_id) {
       return res.status(400).json({ success: false, error: "email_id is required." });
     }
@@ -3660,10 +3785,11 @@ v1Router.patch("/agent/triage", requireAgentScope("read_all"), async (req, res) 
     if (ai_summary !== void 0) updates.ai_summary = String(ai_summary).slice(0, 2e3);
     if (requires_alert !== void 0) updates.requires_alert = Boolean(requires_alert);
     if (is_read !== void 0) updates.is_read = Boolean(is_read);
+    if (folder !== void 0) updates.folder = String(folder).slice(0, 100);
     if (Object.keys(updates).length === 0) {
       return res.status(400).json({
         success: false,
-        error: "No valid triage fields provided (category, ai_summary, requires_alert, is_read)."
+        error: "No valid triage fields provided (category, ai_summary, requires_alert, is_read, folder)."
       });
     }
     const updated = await db.update(emails).set(updates).where(eq9(emails.id, email_id)).returning();
@@ -4084,12 +4210,12 @@ async function createApp() {
       if (search?.trim()) {
         const q = `%${search.trim().replace(/[%_\\]/g, (c) => `\\${c}`)}%`;
         conds.push(
-          or4(
-            ilike2(emails.subject, q),
-            ilike2(emails.sender, q),
-            ilike2(emails.body_snippet, q),
-            ilike2(emails.ai_summary, q),
-            ilike2(emails.recipients, q)
+          or5(
+            ilike3(emails.subject, q),
+            ilike3(emails.sender, q),
+            ilike3(emails.body_snippet, q),
+            ilike3(emails.ai_summary, q),
+            ilike3(emails.recipients, q)
           )
         );
       }

@@ -1,7 +1,7 @@
 import React from 'react';
-import { Square, Paperclip, AlertTriangle, CheckCheck, Mail, MailOpen, Trash2, X, Sparkles, Loader2, Inbox, ArrowUpRight } from 'lucide-react';
+import { Square, Paperclip, AlertTriangle, CheckCheck, Mail, MailOpen, Trash2, X, Sparkles, Loader2, Inbox, ArrowUpRight, Archive } from 'lucide-react';
 import type { EmailItem, ParsedSearchIntent } from '../types.ts';
-import { Avatar, CategoryBadge, listTime, parseSender, iconButton } from './ui.tsx';
+import { Avatar, CategoryBadge, listTime, parseSender, iconButton, accountBadge } from './ui.tsx';
 import { DeliveryBadge } from './DeliveryProgress.tsx';
 
 export { getCategoryBadgeStyle } from './ui.tsx';
@@ -20,7 +20,7 @@ interface EmailListProps {
   onToggleSelect: (id: string) => void;
   onSelectAll: () => void;
   onClearSelection: () => void;
-  onBatch: (action: 'mark_read' | 'mark_unread' | 'delete') => void;
+  onBatch: (action: 'mark_read' | 'mark_unread' | 'delete' | 'archive') => void;
   onMarkAllRead: () => void;
   onLoadMore: () => void;
   onClearIntent: () => void;
@@ -41,6 +41,7 @@ export function EmailList(p: EmailListProps) {
             <button className="text-xs text-zinc-400 hover:text-zinc-100 px-2" onClick={p.onSelectAll}>Select all</button>
             <button className={iconButton} disabled={p.batchBusy} onClick={() => p.onBatch('mark_read')} title="Mark read"><MailOpen className="w-4 h-4" /></button>
             <button className={iconButton} disabled={p.batchBusy} onClick={() => p.onBatch('mark_unread')} title="Mark unread"><Mail className="w-4 h-4" /></button>
+            <button className={iconButton} disabled={p.batchBusy} onClick={() => p.onBatch('archive')} title="Archive"><Archive className="w-4 h-4" /></button>
             <button className={`${iconButton} hover:text-rose-300`} disabled={p.batchBusy} onClick={() => p.onBatch('delete')} title="Delete from AetherMail"><Trash2 className="w-4 h-4" /></button>
           </div>
         ) : (
@@ -146,9 +147,17 @@ export function EmailList(p: EmailListProps) {
                         )}
                         {outbound && e.delivery_status ? <DeliveryBadge status={e.delivery_status} transport={e.transport} /> : <CategoryBadge category={e.category} />}
                         {e.has_attachments && <Paperclip className="w-3.5 h-3.5 text-zinc-500" />}
-                        {p.showAccount && e.account_email && (
-                          <span className="ml-auto text-[10px] font-mono text-zinc-500 truncate max-w-[170px]">{e.account_email}</span>
-                        )}
+                        {p.showAccount && e.account_email && (() => {
+                          const b = accountBadge(e.account_email);
+                          return (
+                            <span
+                              title={e.account_email}
+                              className={`ml-auto text-[9.5px] font-mono px-1.5 py-0.5 rounded border flex-shrink-0 ${b.style}`}
+                            >
+                              {b.label}
+                            </span>
+                          );
+                        })()}
                       </div>
                     </div>
                   </div>

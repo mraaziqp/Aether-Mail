@@ -5,7 +5,7 @@ import {
 } from 'lucide-react';
 import type { EmailItem, EmailCategory, SendResult } from '../types.ts';
 import { api, ApiError } from '../client/api.ts';
-import { Avatar, CategoryBadge, CATEGORY_META, parseSender, relativeTime, iconButton, buttonPrimary, buttonGhost } from './ui.tsx';
+import { Avatar, CategoryBadge, CATEGORY_META, parseSender, relativeTime, iconButton, buttonPrimary, buttonGhost, accountBadge } from './ui.tsx';
 import { DeliveryProgress, useDeliveryTracking, type SendPhase } from './DeliveryProgress.tsx';
 
 export interface ComposePrefill {
@@ -274,7 +274,17 @@ export function EmailDetail(p: EmailDetailProps) {
         </div>
         <button className={`${iconButton} hover:text-orange-300`} title="Mark as spam" onClick={() => p.onSetCategory(e, 'spam')}><ShieldAlert className="w-[18px] h-[18px]" /></button>
         <button className={`${iconButton} hover:text-rose-300`} title="Delete from AetherMail (#)" onClick={() => p.onDelete(e)}><Trash2 className="w-[18px] h-[18px]" /></button>
-        <span className="ml-auto text-xs font-mono text-zinc-500 truncate hidden sm:block">{e.account_email}</span>
+        {e.account_email && (() => {
+          const b = accountBadge(e.account_email);
+          return (
+            <span
+              title={e.account_email}
+              className={`ml-auto text-[9.5px] font-mono px-2 py-0.5 rounded border flex-shrink-0 hidden sm:inline-block ${b.style}`}
+            >
+              {b.label}
+            </span>
+          );
+        })()}
       </div>
 
       <div className="flex-1 overflow-y-auto">

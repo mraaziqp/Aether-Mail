@@ -69,12 +69,19 @@ export async function smartSearchAction(
       };
     }
 
-    // 1. Pass semantic query to Gemini to parse intent into structured parameters
-    const ai = getGeminiClient();
+    // 1. Pass semantic query to local LLM or Gemini to parse intent into structured parameters
+    let parsedIntent: ParsedSearchIntent = {
+      category: null,
+      requires_alert: null,
+      keywords: [trimmedQuery],
+      sender: null,
+      days_ago: null,
+      intent_explanation: `Searching for "${trimmedQuery}"`,
+    };
 
     const prompt = `You are an expert search parser for an email intelligence system.
 Parse the user's natural language search query into structured search filters.
-The current date is September 16, 2026.
+The current date is October 28, 2026.
 
 User Query: "${trimmedQuery}"
 
@@ -86,74 +93,96 @@ Extract the following fields:
 - "days_ago": number of days back if query mentions relative time (e.g. "yesterday" = 2, "past week" = 7, "today" = 1), otherwise null.
 - "intent_explanation": 1 concise sentence explaining what you understood.`;
 
-    let parsedIntent: ParsedSearchIntent = {
-      category: null,
-      requires_alert: null,
-      keywords: [trimmedQuery],
-      sender: null,
-      days_ago: null,
-      intent_explanation: `Searching for "${trimmedQuery}"`,
-    };
-
-    try {
-      const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash',
-        contents: prompt,
-        config: {
-          responseMimeType: 'application/json',
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              category: {
-                type: Type.STRING,
-                enum: ['urgent', 'personal', 'newsletter', 'automated', 'work', 'financial', 'null'],
-              },
-              requires_alert: {
-                type: Type.BOOLEAN,
-                nullable: true,
-              },
-              keywords: {
-                type: Type.ARRAY,
-                items: { type: Type.STRING },
-              },
-              sender: {
-                type: Type.STRING,
-                nullable: true,
-              },
-              days_ago: {
-                type: Type.INTEGER,
-                nullable: true,
-              },
-              intent_explanation: {
-                type: Type.STRING,
-              },
-            },
-            required: ['intent_explanation'],
+    if (!process.env.GEMINI_API_KEY) {
+      try {
+        const { callLocalLlm } = await import('../../lib/gemini.ts');
+        const rawJson = await callLocalLlm([
+          {
+            role: 'system',
+            content:
+              'You are an email search intent parser. Reply with ONLY a JSON object: {"category":string|null,"requires_alert":boolean|null,"keywords":string[],"sender":string|null,"days_ago":number|null,"intent_explanation":string}. No fences or commentary.',
           },
-        },
-      });
+          { role: 'user', content: prompt },
+        ], { temperature: 0.1, maxTokens: 200 });
 
-      const responseText = response.text;
-      if (responseText) {
-        const rawJson = JSON.parse(responseText);
-        parsedIntent = {
-          category: rawJson.category === 'null' || !rawJson.category ? null : rawJson.category,
-          requires_alert: typeof rawJson.requires_alert === 'boolean' ? rawJson.requires_alert : null,
-          keywords: Array.isArray(rawJson.keywords) && rawJson.keywords.length > 0 ? rawJson.keywords : [trimmedQuery],
-          sender: rawJson.sender || null,
-          days_ago: typeof rawJson.days_ago === 'number' ? rawJson.days_ago : null,
-          intent_explanation: rawJson.intent_explanation || `Searching for ${trimmedQuery}`,
-        };
+        if (rawJson) {
+          const match = rawJson.match(/\{[\s\S]*\}/);
+          if (match) {
+            const raw = JSON.parse(match[0]);
+            parsedIntent = {
+              category: ['urgent', 'personal', 'newsletter', 'automated', 'work', 'financial'].includes(raw.category) ? raw.category : null,
+              requires_alert: typeof raw.requires_alert === 'boolean' ? raw.requires_alert : null,
+              keywords: Array.isArray(raw.keywords) && raw.keywords.length > 0 ? raw.keywords : [trimmedQuery],
+              sender: typeof raw.sender === 'string' && raw.sender.trim() ? raw.sender.trim() : null,
+              days_ago: typeof raw.days_ago === 'number' && raw.days_ago > 0 ? raw.days_ago : null,
+              intent_explanation: raw.intent_explanation || `Searching for "${trimmedQuery}"`,
+            };
+          }
+        }
+      } catch (localErr) {
+        console.warn('Local LLM intent extraction fallback:', localErr);
       }
-    } catch (parseErr) {
-      console.warn('Gemini intent extraction fallback:', parseErr);
-      // Fallback heuristics
-      const lower = trimmedQuery.toLowerCase();
-      if (lower.includes('urgent') || lower.includes('alert')) {
-        parsedIntent.requires_alert = true;
-      }
-      if (lower.includes('financial') || lower.includes('invoice')) {
-        parsedIntent.category = 'financial';
+    } else {
+      const ai = getGeminiClient();
+      try {
+        const response = await ai.models.generateContent({
+          model: 'gemini-2.5-flash',
+          contents: prompt,
+          config: {
+            responseMimeType: 'application/json',
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                category: {
+                  type: Type.STRING,
+                  enum: ['urgent', 'personal', 'newsletter', 'automated', 'work', 'financial', 'null'],
+                },
+                requires_alert: {
+                  type: Type.BOOLEAN,
+                  nullable: true,
+                },
+                keywords: {
+                  type: Type.ARRAY,
+                  items: { type: Type.STRING },
+                },
+                sender: {
+                  type: Type.STRING,
+                  nullable: true,
+                },
+                days_ago: {
+                  type: Type.INTEGER,
+                  nullable: true,
+                },
+                intent_explanation: {
+                  type: Type.STRING,
+                },
+              },
+              required: ['intent_explanation'],
+            },
+          },
+        });
+
+        const responseText = response.text;
+        if (responseText) {
+          const rawJson = JSON.parse(responseText);
+          parsedIntent = {
+            category: rawJson.category === 'null' || !rawJson.category ? null : rawJson.category,
+            requires_alert: typeof rawJson.requires_alert === 'boolean' ? rawJson.requires_alert : null,
+            keywords: Array.isArray(rawJson.keywords) && rawJson.keywords.length > 0 ? rawJson.keywords : [trimmedQuery],
+            sender: rawJson.sender || null,
+            days_ago: typeof rawJson.days_ago === 'number' ? rawJson.days_ago : null,
+            intent_explanation: rawJson.intent_explanation || `Searching for ${trimmedQuery}`,
+          };
+        }
+      } catch (parseErr) {
+        console.warn('Gemini intent extraction fallback:', parseErr);
+        const lower = trimmedQuery.toLowerCase();
+        if (lower.includes('urgent') || lower.includes('alert')) {
+          parsedIntent.requires_alert = true;
+        }
+        if (lower.includes('financial') || lower.includes('invoice')) {
+          parsedIntent.category = 'financial';
+        }
       }
     }
 

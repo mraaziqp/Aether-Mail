@@ -119,11 +119,38 @@ export function requireAgentScope(requiredScope?: string) {
  * Seeds or returns an active Jarvis root key if none exists
  */
 export async function ensureJarvisRootKey(): Promise<{ rawKey?: string; keyInfo: AgentKey }> {
+  const envKey = process.env.JARVIS_AGENT_KEY?.trim();
   const existing = await db
     .select()
     .from(agent_keys)
     .where(eq(agent_keys.bot_name, 'Jarvis'))
     .limit(1);
+
+  if (envKey) {
+    const envHash = hashAgentKey(envKey);
+    if (existing.length > 0 && existing[0].key_hash === envHash) {
+      return { rawKey: envKey, keyInfo: existing[0] };
+    }
+    if (existing.length > 0) {
+      const [updated] = await db
+        .update(agent_keys)
+        .set({ key_hash: envHash, scopes: ['super_admin', 'read_all', 'send_as_any'] })
+        .where(eq(agent_keys.id, existing[0].id))
+        .returning();
+      return { rawKey: envKey, keyInfo: updated };
+    }
+    const [inserted] = await db
+      .insert(agent_keys)
+      .values({
+        id: 'ak_jarvis_master_root',
+        bot_name: 'Jarvis',
+        key_hash: envHash,
+        scopes: ['super_admin', 'read_all', 'send_as_any'],
+        created_at: new Date(),
+      })
+      .returning();
+    return { rawKey: envKey, keyInfo: inserted };
+  }
 
   if (existing.length > 0) {
     return { keyInfo: existing[0] };

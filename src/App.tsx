@@ -348,12 +348,13 @@ export default function App() {
     void fetchStatus();
   };
 
-  const batch = async (action: 'mark_read' | 'mark_unread' | 'delete') => {
+  const batch = async (action: 'mark_read' | 'mark_unread' | 'delete' | 'archive') => {
     const ids = [...selectedIds];
     setBatchBusy(true);
     try {
       await api('/api/emails/batch', { method: 'POST', json: { emailIds: ids, action } });
       if (action === 'delete') setEmails((prev) => prev.filter((e) => !selectedIds.has(e.id)));
+      else if (action === 'archive') setEmails((prev) => prev.map((e) => (selectedIds.has(e.id) ? { ...e, folder: 'Archive' } : e)));
       else setEmails((prev) => prev.map((e) => (selectedIds.has(e.id) ? { ...e, is_read: action === 'mark_read' } : e)));
       setSelectedIds(new Set());
       void fetchStatus();

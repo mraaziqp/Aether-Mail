@@ -14,7 +14,7 @@ import { inArray } from 'drizzle-orm';
 
 export interface BatchEmailsParams {
   emailIds: string[];
-  action: 'mark_read' | 'mark_unread' | 'delete';
+  action: 'mark_read' | 'mark_unread' | 'delete' | 'archive';
 }
 
 export interface BatchEmailsResponse {
@@ -67,6 +67,20 @@ export async function batchUpdateEmailsAction(
         success: true,
         affectedCount: result.length,
         action: 'mark_unread',
+      };
+    }
+
+    if (action === 'archive') {
+      const result = await db
+        .update(emails)
+        .set({ folder: 'Archive' })
+        .where(inArray(emails.id, emailIds))
+        .returning();
+
+      return {
+        success: true,
+        affectedCount: result.length,
+        action: 'archive',
       };
     }
 
