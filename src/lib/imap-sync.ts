@@ -145,6 +145,22 @@ function pickFolders(boxes: ListResponse[], target: ImapProvider): Array<{ path:
     const sent = bySpecial('\\Sent') || byName('Sent') || byName('Sent Items') || byName('[Gmail]/Sent Mail');
     if (sent) out.push({ path: sent, kind: 'sent' });
   }
+
+  for (const box of boxes) {
+    if (out.some((f) => f.path.toLowerCase() === box.path.toLowerCase())) continue;
+    const pathLower = box.path.toLowerCase();
+    if (
+      box.specialUse === '\\Drafts' ||
+      box.specialUse === '\\Trash' ||
+      pathLower === 'drafts' ||
+      pathLower === 'trash' ||
+      pathLower.includes('trash')
+    ) {
+      continue;
+    }
+    out.push({ path: box.path, kind: 'inbox' });
+  }
+
   return out;
 }
 
@@ -185,7 +201,7 @@ export interface SyncOptions {
  */
 export async function syncMailbox(account: Account, password: string, opts: SyncOptions = {}): Promise<ImapSyncResult> {
   const deadline = opts.deadline ?? Date.now() + 45_000;
-  const backfill = opts.backfill ?? (Number(process.env.IMAP_BACKFILL) || 50);
+  const backfill = opts.backfill ?? (Number(process.env.IMAP_BACKFILL) || 200);
   const cfg = readMailboxConfig(account.oauth_tokens);
   const selfAddress = account.email_address.trim().toLowerCase();
 
@@ -247,7 +263,7 @@ export async function syncMailbox(account: Account, password: string, opts: Sync
       const lock = await client.getMailboxLock(folder.path, { readOnly: true });
       try {
         // Phase 1: cheap metadata to decide what is new.
-        const wantBackfill = folder.kind === 'inbox' ? backfill : Math.min(20, backfill);
+        const wantBackfill = backfill;
         const metas = fresh
           ? await client.fetchAll(`${Math.max(1, total - wantBackfill + 1)}:*`, { uid: true, flags: true, size: true })
           : await client.fetchAll(`${prev!.last_uid + 1}:*`, { uid: true, flags: true, size: true }, { uid: true });

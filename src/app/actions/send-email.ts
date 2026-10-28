@@ -144,6 +144,58 @@ interface Envelope {
   attachments: SendAttachment[];
 }
 
+async function appendSentToImap(acc: Account, env: Envelope, messageId: string): Promise<void> {
+  try {
+    const pass = mailboxPassword(acc.oauth_tokens);
+    if (!pass) return;
+    const cfg = readMailboxConfig(acc.oauth_tokens);
+    if (!cfg.imap_host) return;
+
+    const { createRequire } = await import('node:module');
+    const req = createRequire(import.meta.url);
+    const MailComposer = req('nodemailer/lib/mail-composer');
+    const mail = new MailComposer({
+      from: `"${env.fromName}" <${env.from}>`,
+      to: env.to,
+      cc: env.cc.length ? env.cc : undefined,
+      bcc: env.bcc.length ? env.bcc : undefined,
+      replyTo: env.replyTo,
+      subject: env.subject,
+      html: env.html,
+      text: env.text,
+      messageId,
+      headers: env.headers,
+      attachments: env.attachments.map((a) => ({
+        filename: a.filename,
+        content: Buffer.from(a.content, 'base64'),
+        contentType: a.contentType,
+      })),
+    });
+
+    const buffer: Buffer = await new Promise((resolve, reject) => {
+      mail.compile().build((err: Error | null, msg: Buffer) => (err ? reject(err) : resolve(msg)));
+    });
+
+    const { ImapFlow } = await import('imapflow');
+    const client = new ImapFlow({
+      host: cfg.imap_host,
+      port: cfg.imap_port || 993,
+      secure: (cfg.imap_port || 993) === 993,
+      auth: { user: acc.email_address, pass },
+      logger: false,
+    });
+
+    await client.connect();
+    const boxes = await client.list();
+    const sentBox =
+      boxes.find((b) => b.specialUse === '\\Sent' || b.path.toLowerCase() === 'sent' || b.path.toLowerCase() === 'sent items')?.path || 'Sent';
+    await client.append(sentBox, buffer, ['\\Seen']);
+    await client.logout();
+  } catch (err) {
+    console.warn('[send] could not append copy to server IMAP Sent:', (err as Error).message);
+  }
+}
+
 async function viaSmtp(
   env: Envelope,
   server: { host: string; port: number; user?: string; pass?: string },
@@ -403,6 +455,9 @@ export async function sendEmailAction(params: SendEmailParams): Promise<SendEmai
         delivery_updated_at: new Date(),
       };
       if (acc && (await storeEmail(record))) emailId = record.id;
+      if (acc && !isGmail(from) && provider.startsWith('SMTP')) {
+        void appendSentToImap(acc, env, messageId);
+      }
     } catch (dbErr) {
       console.warn('[send] sent, but could not log the copy:', dbErr);
     }
