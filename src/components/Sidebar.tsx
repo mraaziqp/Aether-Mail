@@ -40,6 +40,24 @@ export function accountHealth(a: Account, now = Date.now()): { tone: string; lab
   return { tone: 'bg-emerald-400', label: `Synced ${relativeTime(a.last_synced_at, now)}` };
 }
 
+export function accountProviderTag(a: Account): { label: string; style: string } {
+  const host = a.settings?.imap_host?.toLowerCase() || '';
+  const email = a.email_address.toLowerCase();
+  if (a.provider === 'google' || email.includes('@gmail.com')) {
+    return { label: 'Gmail', style: 'bg-rose-500/10 text-rose-300 border-rose-500/20' };
+  }
+  if (host.includes('secureserver') || host.includes('godaddy') || email.endsWith('@verifiedbizlink.co.za')) {
+    return { label: 'GoDaddy', style: 'bg-teal-500/10 text-teal-300 border-teal-500/20' };
+  }
+  if (a.provider === 'resend' || email.endsWith('@arpcloudsolutions.co.za')) {
+    return { label: 'Resend', style: 'bg-cyan-500/10 text-cyan-300 border-cyan-500/20' };
+  }
+  if (a.provider === 'zoho' || host.includes('zoho')) {
+    return { label: 'Zoho', style: 'bg-amber-500/10 text-amber-300 border-amber-500/20' };
+  }
+  return { label: (a.provider || 'IMAP').toUpperCase(), style: 'bg-zinc-800 text-zinc-400 border-zinc-700/50' };
+}
+
 interface NavItemProps {
   icon: React.ReactNode; label: string; count?: number; active: boolean; collapsed: boolean; onClick: () => void; accent?: string;
 }
@@ -110,12 +128,13 @@ export function Sidebar(props: SidebarProps) {
             <NavItem icon={<Layers className="w-[18px] h-[18px]" />} label="All mailboxes" count={totalUnread} active={selectedAccountId === 'all'} collapsed={collapsed} onClick={() => props.onSelectAccount('all')} />
             {accounts.map((a) => {
               const h = accountHealth(a, now);
+              const pTag = accountProviderTag(a);
               const active = selectedAccountId === a.id;
               return (
                 <button
                   key={a.id}
                   onClick={() => props.onSelectAccount(a.id)}
-                  title={`${a.email_address}\n${h.label}`}
+                  title={`${a.email_address}\n${h.label}\nProvider: ${pTag.label}`}
                   className={`w-full flex items-center gap-3 rounded-xl px-3 py-2.5 text-left transition border ${
                     active ? 'bg-[#161a24] border-[#232838]' : 'border-transparent hover:bg-[#12151d]'
                   } ${collapsed ? 'justify-center px-0' : ''}`}
@@ -128,11 +147,18 @@ export function Sidebar(props: SidebarProps) {
                   </span>
                   {!collapsed && (
                     <span className="flex-1 min-w-0">
-                      <span className={`block text-[13px] truncate ${active ? 'text-zinc-50' : 'text-zinc-300'}`}>{a.display_name || a.email_address.split('@')[0]}</span>
-                      <span className="block text-[11px] text-zinc-500 truncate">{a.email_address}</span>
+                      <div className="flex items-center justify-between gap-1.5">
+                        <span className={`block text-[13px] font-medium truncate ${active ? 'text-zinc-50' : 'text-zinc-300'}`}>
+                          {a.display_name || a.email_address.split('@')[0]}
+                        </span>
+                        <span className={`text-[9px] font-mono px-1.5 py-0.5 rounded border flex-shrink-0 ${pTag.style}`}>
+                          {pTag.label}
+                        </span>
+                      </div>
+                      <span className="block text-[11px] text-zinc-500 truncate mt-0.5">{a.email_address}</span>
                     </span>
                   )}
-                  {!collapsed && !!a.unread && <span className="text-[11px] font-mono text-zinc-400">{a.unread}</span>}
+                  {!collapsed && !!a.unread && <span className="text-[11px] font-mono text-zinc-400 ml-1">{a.unread}</span>}
                 </button>
               );
             })}
@@ -163,6 +189,28 @@ export function Sidebar(props: SidebarProps) {
       </nav>
 
       <div className="border-t border-[#161922] p-3 space-y-1">
+        {/* Jarvis Autonomous Active Banner */}
+        <button
+          onClick={props.onOpenSettings}
+          title="Jarvis Autonomous NOC Protocol: Connected and Active"
+          className={`group w-full flex items-center gap-2.5 rounded-xl px-3 py-2 text-xs transition border border-[#212739] bg-gradient-to-r from-[#11141f] to-[#0c0e15] hover:border-cyan-500/40 mb-1.5 ${
+            collapsed ? 'justify-center px-0' : ''
+          }`}
+        >
+          <span className="relative flex w-2 h-2 flex-shrink-0">
+            <span className="absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75 animate-ping" />
+            <span className="relative inline-flex w-2 h-2 rounded-full bg-emerald-400" />
+          </span>
+          {!collapsed && (
+            <div className="flex-1 min-w-0 flex items-center justify-between">
+              <span className="text-[11.5px] font-semibold text-zinc-200 truncate">Jarvis Protocol</span>
+              <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/25 font-bold">
+                CONNECTED
+              </span>
+            </div>
+          )}
+        </button>
+
         <NavItem
           icon={<Activity className={`w-[18px] h-[18px] ${anyError ? 'text-rose-400' : 'text-emerald-400'}`} />}
           label={anyError ? 'Sync issues' : 'Sync health'}

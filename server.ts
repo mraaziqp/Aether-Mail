@@ -454,34 +454,6 @@ export async function createApp() {
     })
   );
 
-  app.get(
-    '/api/emails/:id',
-    asyncRoute(async (req, res) => {
-      const [row] = await db
-        .select({ ...listColumns, full_body: emails.full_body, message_id: emails.message_id })
-        .from(emails)
-        .leftJoin(accounts, eq(emails.account_id, accounts.id))
-        .where(eq(emails.id, req.params.id))
-        .limit(1);
-      if (!row) return res.status(404).json({ error: 'Email not found' });
-      res.json(row);
-    })
-  );
-
-  app.get(
-    '/api/threads/:threadId',
-    asyncRoute(async (req, res) => {
-      const rows = await db
-        .select({ ...listColumns, full_body: emails.full_body })
-        .from(emails)
-        .leftJoin(accounts, eq(emails.account_id, accounts.id))
-        .where(eq(emails.thread_id, req.params.threadId))
-        .orderBy(emails.received_at)
-        .limit(50);
-      res.json(rows);
-    })
-  );
-
   /** Latest delivery state of a sent message; asks the provider when not final yet. */
   app.get(
     '/api/emails/:id/delivery',
@@ -513,8 +485,36 @@ export async function createApp() {
     })
   );
 
+  app.get(
+    '/api/emails/:id(*)',
+    asyncRoute(async (req, res) => {
+      const [row] = await db
+        .select({ ...listColumns, full_body: emails.full_body, message_id: emails.message_id })
+        .from(emails)
+        .leftJoin(accounts, eq(emails.account_id, accounts.id))
+        .where(eq(emails.id, req.params.id))
+        .limit(1);
+      if (!row) return res.status(404).json({ error: 'Email not found' });
+      res.json(row);
+    })
+  );
+
+  app.get(
+    '/api/threads/:threadId',
+    asyncRoute(async (req, res) => {
+      const rows = await db
+        .select({ ...listColumns, full_body: emails.full_body })
+        .from(emails)
+        .leftJoin(accounts, eq(emails.account_id, accounts.id))
+        .where(eq(emails.thread_id, req.params.threadId))
+        .orderBy(emails.received_at)
+        .limit(50);
+      res.json(rows);
+    })
+  );
+
   app.patch(
-    '/api/emails/:id',
+    '/api/emails/:id(*)',
     asyncRoute(async (req, res) => {
       const { category, requires_alert } = req.body ?? {};
       const valid = ['urgent', 'personal', 'newsletter', 'automated', 'work', 'financial', 'spam'];
@@ -529,7 +529,7 @@ export async function createApp() {
   );
 
   app.delete(
-    '/api/emails/:id',
+    '/api/emails/:id(*)',
     asyncRoute(async (req, res) => {
       await db.delete(emails).where(eq(emails.id, req.params.id));
       res.json({ success: true });

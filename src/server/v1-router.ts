@@ -92,10 +92,37 @@ v1Router.get('/emails', requireApiKey('read'), async (req: Request, res: Respons
 });
 
 /**
- * GET /api/v1/emails/:id
- * Retrieve full email item by ID
+ * GET /api/v1/emails/:id/delivery
+ * Delivery state of a sent message (the emailId returned by /emails/send):
+ * sent → delivered | delivery_delayed | bounced | complained | failed.
  */
-v1Router.get('/emails/:id', requireApiKey('read'), async (req: Request, res: Response) => {
+v1Router.get('/emails/:id/delivery', requireApiKey('read'), async (req: Request, res: Response) => {
+  try {
+    const { refreshDelivery } = await import('../lib/delivery.ts');
+    const row = await refreshDelivery(req.params.id);
+    if (!row) return res.status(404).json({ success: false, error: `Email ${req.params.id} not found.` });
+    return res.json({
+      success: true,
+      data: {
+        id: row.id,
+        status: row.delivery_status,
+        detail: row.delivery_detail,
+        updated_at: row.delivery_updated_at ? row.delivery_updated_at.toISOString() : null,
+        transport: row.transport,
+        trackable: row.transport === 'Resend' && Boolean(row.provider_message_id),
+      },
+    });
+  } catch (error) {
+    console.error('v1 GET /emails/:id/delivery error:', error);
+    return res.status(500).json({ success: false, error: error instanceof Error ? error.message : 'Failed to read delivery state' });
+  }
+});
+
+/**
+ * GET /api/v1/emails/:id
+ * Retrieve full email item by ID (wildcard to support RFC Message-IDs containing slashes)
+ */
+v1Router.get('/emails/:id(*)', requireApiKey('read'), async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const results = await db
@@ -137,33 +164,6 @@ v1Router.get('/emails/:id', requireApiKey('read'), async (req: Request, res: Res
       success: false,
       error: error instanceof Error ? error.message : 'Failed to fetch email',
     });
-  }
-});
-
-/**
- * GET /api/v1/emails/:id/delivery
- * Delivery state of a sent message (the emailId returned by /emails/send):
- * sent → delivered | delivery_delayed | bounced | complained | failed.
- */
-v1Router.get('/emails/:id/delivery', requireApiKey('read'), async (req: Request, res: Response) => {
-  try {
-    const { refreshDelivery } = await import('../lib/delivery.ts');
-    const row = await refreshDelivery(req.params.id);
-    if (!row) return res.status(404).json({ success: false, error: `Email ${req.params.id} not found.` });
-    return res.json({
-      success: true,
-      data: {
-        id: row.id,
-        status: row.delivery_status,
-        detail: row.delivery_detail,
-        updated_at: row.delivery_updated_at ? row.delivery_updated_at.toISOString() : null,
-        transport: row.transport,
-        trackable: row.transport === 'Resend' && Boolean(row.provider_message_id),
-      },
-    });
-  } catch (error) {
-    console.error('v1 GET /emails/:id/delivery error:', error);
-    return res.status(500).json({ success: false, error: error instanceof Error ? error.message : 'Failed to read delivery state' });
   }
 });
 
@@ -242,8 +242,9 @@ v1Router.post('/emails/send', requireApiKey('send'), async (req: Request, res: R
 /**
  * PATCH /api/v1/emails/:id
  * Programmatic triage for external bots (mark read, change category, toggle alerts)
+ * (Wildcard parameter to support RFC Message-IDs containing slashes)
  */
-v1Router.patch('/emails/:id', requireApiKey('write'), async (req: Request, res: Response) => {
+v1Router.patch('/emails/:id(*)', requireApiKey('write'), async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const { is_read, category, requires_alert } = req.body;

@@ -3037,7 +3037,28 @@ v1Router.get("/emails", requireApiKey("read"), async (req, res) => {
     });
   }
 });
-v1Router.get("/emails/:id", requireApiKey("read"), async (req, res) => {
+v1Router.get("/emails/:id/delivery", requireApiKey("read"), async (req, res) => {
+  try {
+    const { refreshDelivery: refreshDelivery2 } = await Promise.resolve().then(() => (init_delivery(), delivery_exports));
+    const row = await refreshDelivery2(req.params.id);
+    if (!row) return res.status(404).json({ success: false, error: `Email ${req.params.id} not found.` });
+    return res.json({
+      success: true,
+      data: {
+        id: row.id,
+        status: row.delivery_status,
+        detail: row.delivery_detail,
+        updated_at: row.delivery_updated_at ? row.delivery_updated_at.toISOString() : null,
+        transport: row.transport,
+        trackable: row.transport === "Resend" && Boolean(row.provider_message_id)
+      }
+    });
+  } catch (error) {
+    console.error("v1 GET /emails/:id/delivery error:", error);
+    return res.status(500).json({ success: false, error: error instanceof Error ? error.message : "Failed to read delivery state" });
+  }
+});
+v1Router.get("/emails/:id(*)", requireApiKey("read"), async (req, res) => {
   try {
     const { id } = req.params;
     const results = await db.select({
@@ -3072,27 +3093,6 @@ v1Router.get("/emails/:id", requireApiKey("read"), async (req, res) => {
       success: false,
       error: error instanceof Error ? error.message : "Failed to fetch email"
     });
-  }
-});
-v1Router.get("/emails/:id/delivery", requireApiKey("read"), async (req, res) => {
-  try {
-    const { refreshDelivery: refreshDelivery2 } = await Promise.resolve().then(() => (init_delivery(), delivery_exports));
-    const row = await refreshDelivery2(req.params.id);
-    if (!row) return res.status(404).json({ success: false, error: `Email ${req.params.id} not found.` });
-    return res.json({
-      success: true,
-      data: {
-        id: row.id,
-        status: row.delivery_status,
-        detail: row.delivery_detail,
-        updated_at: row.delivery_updated_at ? row.delivery_updated_at.toISOString() : null,
-        transport: row.transport,
-        trackable: row.transport === "Resend" && Boolean(row.provider_message_id)
-      }
-    });
-  } catch (error) {
-    console.error("v1 GET /emails/:id/delivery error:", error);
-    return res.status(500).json({ success: false, error: error instanceof Error ? error.message : "Failed to read delivery state" });
   }
 });
 v1Router.get("/contacts", requireApiKey("read"), async (req, res) => {
@@ -3151,7 +3151,7 @@ v1Router.post("/emails/send", requireApiKey("send"), async (req, res) => {
     });
   }
 });
-v1Router.patch("/emails/:id", requireApiKey("write"), async (req, res) => {
+v1Router.patch("/emails/:id(*)", requireApiKey("write"), async (req, res) => {
   try {
     const { id } = req.params;
     const { is_read, category, requires_alert } = req.body;
@@ -4098,21 +4098,6 @@ async function createApp() {
     })
   );
   app.get(
-    "/api/emails/:id",
-    asyncRoute(async (req, res) => {
-      const [row] = await db.select({ ...listColumns, full_body: emails.full_body, message_id: emails.message_id }).from(emails).leftJoin(accounts, eq11(emails.account_id, accounts.id)).where(eq11(emails.id, req.params.id)).limit(1);
-      if (!row) return res.status(404).json({ error: "Email not found" });
-      res.json(row);
-    })
-  );
-  app.get(
-    "/api/threads/:threadId",
-    asyncRoute(async (req, res) => {
-      const rows = await db.select({ ...listColumns, full_body: emails.full_body }).from(emails).leftJoin(accounts, eq11(emails.account_id, accounts.id)).where(eq11(emails.thread_id, req.params.threadId)).orderBy(emails.received_at).limit(50);
-      res.json(rows);
-    })
-  );
-  app.get(
     "/api/emails/:id/delivery",
     asyncRoute(async (req, res) => {
       const { refreshDelivery: refreshDelivery2 } = await Promise.resolve().then(() => (init_delivery(), delivery_exports));
@@ -4136,8 +4121,23 @@ async function createApp() {
       res.json(updated);
     })
   );
+  app.get(
+    "/api/emails/:id(*)",
+    asyncRoute(async (req, res) => {
+      const [row] = await db.select({ ...listColumns, full_body: emails.full_body, message_id: emails.message_id }).from(emails).leftJoin(accounts, eq11(emails.account_id, accounts.id)).where(eq11(emails.id, req.params.id)).limit(1);
+      if (!row) return res.status(404).json({ error: "Email not found" });
+      res.json(row);
+    })
+  );
+  app.get(
+    "/api/threads/:threadId",
+    asyncRoute(async (req, res) => {
+      const rows = await db.select({ ...listColumns, full_body: emails.full_body }).from(emails).leftJoin(accounts, eq11(emails.account_id, accounts.id)).where(eq11(emails.thread_id, req.params.threadId)).orderBy(emails.received_at).limit(50);
+      res.json(rows);
+    })
+  );
   app.patch(
-    "/api/emails/:id",
+    "/api/emails/:id(*)",
     asyncRoute(async (req, res) => {
       const { category, requires_alert } = req.body ?? {};
       const valid = ["urgent", "personal", "newsletter", "automated", "work", "financial", "spam"];
@@ -4151,7 +4151,7 @@ async function createApp() {
     })
   );
   app.delete(
-    "/api/emails/:id",
+    "/api/emails/:id(*)",
     asyncRoute(async (req, res) => {
       await db.delete(emails).where(eq11(emails.id, req.params.id));
       res.json({ success: true });

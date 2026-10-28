@@ -1,5 +1,5 @@
 import React, { useEffect, useRef } from 'react';
-import { Search, Sparkles, RefreshCw, Bell, BellOff, Menu, X, Mail, WifiOff } from 'lucide-react';
+import { Search, Sparkles, RefreshCw, Bell, BellOff, Menu, X, Mail, WifiOff, Bot } from 'lucide-react';
 import type { SessionUser } from '../types.ts';
 import { relativeTime, iconButton, Kbd } from './ui.tsx';
 
@@ -23,6 +23,7 @@ interface HeaderProps {
   onToggleNotifications: () => void;
   onOpenMobileNav: () => void;
   onOpenHealth: () => void;
+  onOpenSettings?: () => void;
 }
 
 export function DashboardHeader(p: HeaderProps) {
@@ -99,6 +100,17 @@ export function DashboardHeader(p: HeaderProps) {
       </form>
 
       <div className="flex items-center gap-2 ml-auto">
+        {p.onOpenSettings && (
+          <button
+            onClick={p.onOpenSettings}
+            className="hidden sm:inline-flex items-center gap-2 h-9 px-3 rounded-xl border border-cyan-500/25 bg-cyan-500/[0.06] hover:bg-cyan-500/[0.12] hover:border-cyan-500/40 text-xs transition group"
+            title="Jarvis Autonomous NOC Protocol: Connected & Active"
+          >
+            <Bot className="w-3.5 h-3.5 text-cyan-300 group-hover:scale-110 transition-transform" />
+            <span className="text-zinc-200 font-medium">Jarvis</span>
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+          </button>
+        )}
         <button
           onClick={p.onOpenHealth}
           className="hidden lg:flex items-center gap-2 h-9 px-3 rounded-xl border border-[#1f2331] bg-[#0f1117] text-xs hover:border-[#2a3042] transition"

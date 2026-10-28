@@ -486,6 +486,7 @@ export default function App() {
         onToggleNotifications={toggleNotifications}
         onOpenMobileNav={() => setMobileNav(true)}
         onOpenHealth={() => setHealthOpen(true)}
+        onOpenSettings={() => setSettingsOpen(true)}
       />
 
       <div className="flex-1 flex overflow-hidden">
