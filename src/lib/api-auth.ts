@@ -136,6 +136,16 @@ export async function validateApiKey(
             statusCode: 403,
           };
         }
+        // Anything beyond reading and sending (admin: keys, domains, provisioning,
+        // sync) needs super_admin. Before, any agent key passed these, whatever
+        // its scopes said.
+        if (requiredScope && requiredScope !== 'read' && requiredScope !== 'send' && !isSuper) {
+          return {
+            valid: false,
+            error: `Unauthorized: Agent '${agent.bot_name}' lacks ${requiredScope} permissions.`,
+            statusCode: 403,
+          };
+        }
 
         db.update(agent_keys)
           .set({ last_active: new Date() })
